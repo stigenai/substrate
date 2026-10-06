@@ -22,6 +22,9 @@ kind: Kustomization
 #
 # The S3 keys are NOT in git: create the ate-s3-credentials Secret (keys
 # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY) in ate-system before install.
+# Private images: an ate-registry-auth dockerconfigjson Secret in ate-system
+# lets atelet pull actor images; kubelet pulls (control plane, worker pods)
+# still need imagePullSecrets on the namespaces' service accounts.
 # pod-certificate-controller.yaml is absent for the same reason as in ../kind.
 resources:
   - ../ate-api-server.yaml

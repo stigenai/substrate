@@ -21,7 +21,7 @@ resources:
 # k0s keeps the kubelet under /var/lib/k0s/kubelet, so the CSI and device
 # plugin sockets live there (the container-side mount paths are unchanged).
 # There is no GKE kubelet image credential provider on the node, so its host
-# mounts and flags go, as in ../../kind/atelet.
+# mounts go, as in ../../kind/atelet; registry-auth replaces it.
 patches:
   - patch: |-
       apiVersion: apps/v1
@@ -49,12 +49,27 @@ patches:
               - name: AWS_SECRET_ACCESS_KEY
                 valueFrom:
                   secretKeyRef: {name: ate-s3-credentials, key: AWS_SECRET_ACCESS_KEY}
+              - name: DOCKER_CONFIG
+                value: /run/registry-auth
               volumeMounts:
+              - name: registry-auth
+                mountPath: /run/registry-auth
+                readOnly: true
               - mountPath: /run/image-credential-provider/bin
                 $patch: delete
               - mountPath: /run/image-credential-provider/config.yaml
                 $patch: delete
             volumes:
+            # Private actor images: atelet reads $DOCKER_CONFIG/config.json
+            # for any non-GCP registry. Optional, so a cluster without the
+            # Secret still pulls public images anonymously.
+            - name: registry-auth
+              secret:
+                secretName: ate-registry-auth
+                optional: true
+                items:
+                - key: .dockerconfigjson
+                  path: config.json
             - name: image-credential-provider-bin
               $patch: delete
             - name: image-credential-provider-config

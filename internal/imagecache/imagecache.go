@@ -784,6 +784,12 @@ func (s *Store) remoteOpts(ctx context.Context, parsedRef name.Reference) []remo
 	}
 	if s.authenticator != nil && registryUsesGCPAuth(registry) {
 		opts = append(opts, remote.WithAuth(s.authenticator))
+	} else {
+		// stigenai: any other registry authenticates from
+		// $DOCKER_CONFIG/config.json when the pod mounts one (a
+		// dockerconfigjson Secret, see manifests/ate-install/k0s/atelet), and
+		// pulls anonymously when it does not.
+		opts = append(opts, remote.WithAuthFromKeychain(authn.DefaultKeychain))
 	}
 	return opts
 }

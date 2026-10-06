@@ -57,7 +57,7 @@ func SystemOverlay(cfg *config.Config) string {
 	case cfg.Router == config.RouterAgentgateway:
 		return installDir + "/agentgateway"
 	case cfg.Kind:
-		return installDir + "/kind"
+		return installDir + "/" + cfg.Profile()
 	default:
 		return installDir + "/base"
 	}
@@ -419,7 +419,7 @@ func (e *Env) applyAtenetEgress(ctx context.Context) error {
 // overwrite it with the GKE endpoint and break telemetry everywhere at once.
 func (e *Env) otelConfigPath() string {
 	if e.Cfg.Kind {
-		return e.Cfg.Manifest("kind", "ate-otel-config.yaml")
+		return e.Cfg.Manifest(e.Cfg.Profile(), "ate-otel-config.yaml")
 	}
 	return e.Cfg.Manifest("ate-otel-config.yaml")
 }

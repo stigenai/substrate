@@ -340,7 +340,7 @@ func (e *Env) DeployAtelet(ctx context.Context) error {
 	var err error
 	if e.Cfg.Kind {
 		// The kind overlay patches the DaemonSet for the local node layout.
-		manifest, err = e.KustomizeResolve(ctx, installDir+"/kind/atelet")
+		manifest, err = e.KustomizeResolve(ctx, installDir+"/"+e.Cfg.Profile()+"/atelet")
 	} else {
 		manifest, err = e.ResolveManifest(ctx, e.Cfg.Manifest("atelet.yaml"))
 	}

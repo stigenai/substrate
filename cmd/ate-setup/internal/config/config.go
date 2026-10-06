@@ -87,6 +87,11 @@ type Config struct {
 	// Kind selects the local Kind install profile (ATE_INSTALL_KIND).
 	Kind bool
 
+	// ProfileDir is the manifests/ate-install overlay a Kind-profile install
+	// renders: "kind" by default, or ATE_INSTALL_PROFILE (stigenai: "k0s", a
+	// self-managed cluster that shares Kind's in-cluster S3 and postgres).
+	ProfileDir string
+
 	// Namespace is the namespace the control plane is installed into, from
 	// ATE_NAMESPACE. It defaults to the canonical installdefaults.SystemNamespace,
 	// so an install that does not set it is unaffected. The checked-in manifests
@@ -334,6 +339,7 @@ func Load(opts Options) (*Config, error) {
 	cfg := &Config{
 		Root:                     root,
 		Kind:                     kind,
+		ProfileDir:               firstNonEmpty(env["ATE_INSTALL_PROFILE"], "kind"),
 		Namespace:                firstNonEmpty(env["ATE_NAMESPACE"], installdefaults.SystemNamespace),
 		Kubeconfig:               kubeconfig,
 		Context:                  firstNonEmpty(opts.Context, env["KUBECTL_CONTEXT"]),
@@ -412,13 +418,19 @@ func loadImageSource(opts Options, env map[string]string) images.Source {
 	}
 }
 
+// Profile is the overlay directory a Kind-profile install renders, "kind"
+// unless ATE_INSTALL_PROFILE named another.
+func (c *Config) Profile() string {
+	return firstNonEmpty(c.ProfileDir, "kind")
+}
+
 func applyKindDefaults(cfg *Config) {
 	cfg.ProjectID = ""
 	cfg.ClusterLocation = ""
 	kindClusterName := firstNonEmpty(cfg.shellEnv["KIND_CLUSTER_NAME"], "kind")
 	cfg.Context = firstNonEmpty(cfg.Context, "kind-"+kindClusterName)
 	cfg.KODockerRepo = firstNonEmpty(cfg.KODockerRepo, "localhost:5001")
-	cfg.KODefaultPlatforms = "linux/" + runtime.GOARCH
+	cfg.KODefaultPlatforms = firstNonEmpty(cfg.shellEnv["KO_DEFAULTPLATFORMS"], "linux/"+runtime.GOARCH)
 	cfg.BucketName = "ate-snapshots"
 }
 

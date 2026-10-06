@@ -86,7 +86,7 @@ func (e *Env) applyBundledPostgres(ctx context.Context, plan postgresPlan) error
 // for a real node.
 func (e *Env) postgresManifestPath() string {
 	if e.Cfg.Kind {
-		return e.Cfg.Manifest("kind", "postgres")
+		return e.Cfg.Manifest(e.Cfg.Profile(), "postgres")
 	}
 	return e.Cfg.Manifest("postgres", "postgres.yaml")
 }

@@ -1,0 +1,60 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# stigenai k0s profile (ATE_INSTALL_PROFILE=k0s, with ATE_INSTALL_KIND=true):
+# a self-managed k0s cluster. Like ../kind it keeps snapshots in an in-cluster
+# rustfs and runs the bundled postgres, but it has a real kubelet root
+# (/var/lib/k0s/kubelet), real storage, and the fleet's own OTLP collector.
+#
+# The S3 keys are NOT in git: create the ate-s3-credentials Secret (keys
+# AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY) in ate-system before install.
+# pod-certificate-controller.yaml is absent for the same reason as in ../kind.
+resources:
+  - ../ate-api-server.yaml
+  - ../ate-controller.yaml
+  - ./atelet
+  - ../atenet-router.yaml
+  - ate-otel-config.yaml
+  - rustfs.yaml
+
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: ate-api-server
+        namespace: ate-system
+      spec:
+        template:
+          spec:
+            containers:
+            - name: ate-api-server
+              env:
+              - name: ATE_STORAGE_BACKEND
+                value: s3
+              - name: AWS_REGION
+                value: us-east-1
+              - name: AWS_ENDPOINT_URL
+                value: http://rustfs.ate-system.svc:9000
+              - name: AWS_S3_USE_PATH_STYLE
+                value: "true"
+              - name: AWS_ACCESS_KEY_ID
+                valueFrom:
+                  secretKeyRef: {name: ate-s3-credentials, key: AWS_ACCESS_KEY_ID}
+              - name: AWS_SECRET_ACCESS_KEY
+                valueFrom:
+                  secretKeyRef: {name: ate-s3-credentials, key: AWS_SECRET_ACCESS_KEY}

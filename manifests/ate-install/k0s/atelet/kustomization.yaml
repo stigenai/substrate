@@ -18,10 +18,11 @@ kind: Kustomization
 resources:
   - ../../atelet.yaml
 
-# k0s keeps the kubelet under /var/lib/k0s/kubelet, so the CSI and device
-# plugin sockets live there (the container-side mount paths are unchanged).
-# There is no GKE kubelet image credential provider on the node, so its host
-# mounts go, as in ../../kind/atelet; registry-auth replaces it.
+# k0s keeps the kubelet under /var/lib/k0s/kubelet, so CSI plugin sockets live
+# there (the container-side mount path is unchanged). Device plugins do NOT
+# move: kubelet's DevicePluginPath is a constant, /var/lib/kubelet/device-plugins.
+# GCP registry auth is off (no Google identity off GKE); the mounted
+# ate-registry-auth Secret authenticates private registries instead.
 patches:
   - patch: |-
       apiVersion: apps/v1
@@ -55,10 +56,6 @@ patches:
               - name: registry-auth
                 mountPath: /run/registry-auth
                 readOnly: true
-              - mountPath: /run/image-credential-provider/bin
-                $patch: delete
-              - mountPath: /run/image-credential-provider/config.yaml
-                $patch: delete
             volumes:
             # Private actor images: atelet reads $DOCKER_CONFIG/config.json
             # for any non-GCP registry. Optional, so a cluster without the
@@ -70,13 +67,16 @@ patches:
                 items:
                 - key: .dockerconfigjson
                   path: config.json
-            - name: image-credential-provider-bin
-              $patch: delete
-            - name: image-credential-provider-config
-              $patch: delete
             - name: kubelet-plugins
               hostPath:
                 path: /var/lib/k0s/kubelet/plugins
-            - name: device-plugins
-              hostPath:
-                path: /var/lib/k0s/kubelet/device-plugins
+  - target:
+      kind: DaemonSet
+      name: atelet-.*
+    patch: |-
+      - op: test
+        path: /spec/template/spec/containers/0/args/0
+        value: --gcp-auth-for-image-pulls=true
+      - op: replace
+        path: /spec/template/spec/containers/0/args/0
+        value: --gcp-auth-for-image-pulls=false

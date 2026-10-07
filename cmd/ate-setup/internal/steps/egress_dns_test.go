@@ -33,9 +33,10 @@ import (
 	"github.com/agent-substrate/substrate/cmd/ate-setup/internal/kustomize"
 )
 
-// TestEgressDNSLookupFamily requires ALL on every dynamic forward proxy DNS
-// cache in the install tree, so a new egress variant is checked the day it is
-// added rather than the day it is installed. atenet-egress.yaml says why ALL.
+// TestEgressDNSLookupFamily requires V4_PREFERRED on every dynamic forward
+// proxy DNS cache in the install tree, so a new egress variant is checked the
+// day it is added rather than the day it is installed. atenet-egress.yaml says
+// why V4_PREFERRED (stigenai; upstream pins ALL).
 func TestEgressDNSLookupFamily(t *testing.T) {
 	for _, path := range manifestPaths(t) {
 		caches := dnsCacheConfigs(t, path)
@@ -43,7 +44,7 @@ func TestEgressDNSLookupFamily(t *testing.T) {
 			continue
 		}
 		t.Run(filepath.Base(path), func(t *testing.T) {
-			requireLookupFamilyALL(t, caches)
+			requireLookupFamilyV4Preferred(t, caches)
 		})
 	}
 }
@@ -58,7 +59,7 @@ func TestRenderedOverlaysDNSLookupFamily(t *testing.T) {
 			if err != nil {
 				t.Fatalf("rendering %s: %v", dir, err)
 			}
-			requireLookupFamilyALL(t, dnsCacheConfigsIn(t, dir, bytes.NewReader(rendered)))
+			requireLookupFamilyV4Preferred(t, dnsCacheConfigsIn(t, dir, bytes.NewReader(rendered)))
 		})
 	}
 }
@@ -112,11 +113,11 @@ func TestOverlayDiscoveryCoversTheInstaller(t *testing.T) {
 	}
 }
 
-func requireLookupFamilyALL(t *testing.T, caches []map[string]any) {
+func requireLookupFamilyV4Preferred(t *testing.T, caches []map[string]any) {
 	t.Helper()
 	for _, cache := range caches {
-		if got := cache["dns_lookup_family"]; got != "ALL" {
-			t.Errorf("dns_cache_config %v: dns_lookup_family = %v, want ALL", cache["name"], got)
+		if got := cache["dns_lookup_family"]; got != "V4_PREFERRED" {
+			t.Errorf("dns_cache_config %v: dns_lookup_family = %v, want V4_PREFERRED", cache["name"], got)
 		}
 	}
 }

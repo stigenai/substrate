@@ -14,7 +14,10 @@ source in that volume, mounted only by the single root container at
 Task environment, actor metadata, or the public template. Unsupported profiles
 fail closed. The template must use Data on pause and commit, and Golden for
 Data resume. Golden actors receive an empty protected volume and no credential.
-Non-golden actors cannot restore a Full memory snapshot. Files in SystemInfo
+A non-golden actor cannot restore a previously activated actor's Full memory
+snapshot. Its initial template-owned, credential-free golden snapshot and an
+idempotent retry of that same RESUMING activation are the only Full exception.
+Files in SystemInfo
 are excluded from snapshots; keeping golden memory credential-free is separately
 required because file exclusion alone does not exclude bytes read into memory.
 
@@ -31,7 +34,7 @@ already persist as protobuf blobs, so this additive field needs no SQL migration
 `WorkerService.MintSupervisorBootstrap` takes actor reference, actor UID,
 activation ID, and worker UID. Only atelet mTLS is accepted. Issuance verifies
 current actor/worker assignment, the calling atelet's node incarnation, live
-worker Pod identity, approved template projection, and RESUMING/RUNNING state.
+worker and atelet Pod identities, approved template projection, and RESUMING/RUNNING state.
 The secret is delivered only to atelet, which projects it before starting or
 restoring the workload. Generic `Control.MintActorJWT` cannot emit this claim.
 
@@ -39,7 +42,7 @@ JWTs reuse the configured actor signing pool and issuer. Standard claims are
 `iss`, `sub=actor/<atespace>/<name>`, `aud=[urn:fabriek:native-bootstrap]`,
 `iat`, `nbf`, `exp`, and random `jti`; the lifetime is 300 seconds. Existing
 `ate.dev` fields identify `atespace`, `actorName`, and `actorUID`. The additional
-`ate.dev.supervisor` object uses these exact JSON keys:
+`supervisor` object nested inside `ate.dev` uses these exact JSON keys:
 
 ```json
 {
@@ -93,3 +96,21 @@ Actual gVisor tests must establish UID isolation, root projection permissions,
 credential-free golden capture, Data restore freshness and old-activation denial.
 Deployment also requires exclusive AX writers/private API reachability and
 separate approved Claude/Codex account, tool, revocation and egress evidence.
+
+## Local verification
+
+The implementation has focused tests for actual ES256 signatures and exact
+claims, stale actor/activation/worker/node denials, deleted atelet and worker
+Pods, missing configuration, and secret-response log redaction. Projection
+tests exercise 0700/0600 modes, missing issuer rejection without creating a
+credential file, and a golden projection that never calls the issuer. These
+use synthetic Kubernetes identities and local files, not a hosted gVisor actor.
+
+Real PostgreSQL tests retain the activation before workload conversion, retain
+it across a retry, and rotate it across a new lifecycle activation while keeping
+the actor UID. They also cover credential-free golden restore and Full actor
+snapshot denial. Existing ordinary actor and SystemInfo tests remain required.
+
+Actual gVisor UID isolation, snapshot/restore and deployed identity qualification
+are **NOT_RUN** at this source checkpoint. No production authority or account
+qualification follows from the local test results.

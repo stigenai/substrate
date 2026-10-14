@@ -864,7 +864,7 @@ func (w *ActorWorkflow) validateSupervisorRestore(ctx context.Context, actor *at
 	if snapshot := actor.GetStatus().GetExternalSnapshot(); snapshot != nil && snapshot.GetContentScope() != ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA {
 		// An initial, template-owned golden snapshot is credential-free by construction.
 		tagRef := template.GetStatus().GetGoldenSnapshotStatus().GetGoldenTag()
-		if actor.GetStatus().GetSupervisorActivation() != nil || tagRef == nil {
+		if (actor.GetStatus().GetSupervisorActivation() != nil && actor.GetStatus().GetState() != ateapipb.ActorState_ACTOR_STATE_RESUMING) || tagRef == nil {
 			return status.Error(codes.FailedPrecondition, "protected supervisor requires credential-free golden")
 		}
 		tag, err := w.store.GetTag(ctx, resources.TagRefFromObjectRef(tagRef))

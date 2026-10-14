@@ -54,48 +54,12 @@ func (s *Server) MintSupervisorBootstrap(ctx context.Context, req *ateapipb.Mint
 	if errs := apivalidation.Validate_MintSupervisorBootstrapRequest(ctx, operation.Operation{Type: operation.Create}, nil, req, nil); len(errs) > 0 {
 		return nil, deny
 	}
-	actor, err := s.store.GetActor(ctx, resources.ActorRefFromObjectRef(req.GetActor()))
+	actor, worker, err := s.bootstrapActor(ctx, req, caller)
 	if err != nil {
-		return nil, deny
-	}
-	if req.GetActor().GetAtespace() == resources.GoldenActorAtespace || actor.GetMetadata().GetUid() != req.GetActorUid() {
-		return nil, deny
-	}
-	state := actor.GetStatus().GetState()
-	if state != ateapipb.ActorState_ACTOR_STATE_RESUMING && state != ateapipb.ActorState_ACTOR_STATE_RUNNING {
 		return nil, deny
 	}
 	activation := actor.GetStatus().GetSupervisorActivation()
-	assignment := actor.GetStatus().GetWorkerAssignment()
-	if activation == nil || activation.GetActivationId() != req.GetActivationId() || activation.GetWorkerUid() != req.GetWorkerUid() || assignment.GetWorkerPodUid() != req.GetWorkerUid() || assignment.GetNodeName() != caller.NodeName {
-		return nil, deny
-	}
-	worker, err := s.store.GetWorker(ctx, assignment.GetWorker().GetName())
-	if err != nil || worker.GetWorkerPodUid() != req.GetWorkerUid() || worker.GetNodeName() != caller.NodeName || worker.GetStatus().GetState() != ateapipb.WorkerState_WORKER_STATE_ACTIVE {
-		return nil, deny
-	}
-	bound, err := s.store.GetWorkerAssignment(ctx, worker.GetMetadata().GetName(), req.GetActorUid())
-	if err != nil || !proto.Equal(bound.GetActor(), req.GetActor()) || bound.GetActorUid() != req.GetActorUid() {
-		return nil, deny
-	}
-	node, err := s.bootstrap.Kubernetes.CoreV1().Nodes().Get(ctx, caller.NodeName, metav1.GetOptions{})
-	if err != nil || string(node.UID) != caller.NodeUID || node.DeletionTimestamp != nil {
-		return nil, deny
-	}
-	pod, err := s.bootstrap.Kubernetes.CoreV1().Pods(worker.GetWorkerNamespace()).Get(ctx, worker.GetWorkerPod(), metav1.GetOptions{})
-	if err != nil || string(pod.UID) != req.GetWorkerUid() || pod.Spec.NodeName != caller.NodeName || pod.DeletionTimestamp != nil {
-		return nil, deny
-	}
-	template, err := s.store.GetActorTemplate(ctx, resources.ActorTemplateRefFromObjectRef(actor.GetActorTemplate()))
-	if err != nil {
-		return nil, deny
-	}
-	expected, err := supervisorbootstrap.Describe(template)
-	if err != nil || expected == nil {
-		return nil, deny
-	}
-	expected.ActivationId, expected.WorkerUid = activation.GetActivationId(), activation.GetWorkerUid()
-	if !proto.Equal(expected, activation) {
+	if !s.currentBootstrapHost(ctx, caller, worker) || !s.bootstrapTemplateMatches(ctx, actor) {
 		return nil, deny
 	}
 	// Re-read after external identity observations; an intervening actor transition
@@ -104,11 +68,87 @@ func (s *Server) MintSupervisorBootstrap(ctx context.Context, req *ateapipb.Mint
 	if err != nil || current.GetMetadata().GetVersion() != actor.GetMetadata().GetVersion() || current.GetMetadata().GetUid() != req.GetActorUid() {
 		return nil, deny
 	}
-	now := time.Now().Truncate(time.Second)
-	claims := &actoridjwt.Claims{Issuer: s.bootstrap.Issuer, Subject: "actor/" + req.GetActor().GetAtespace() + "/" + req.GetActor().GetName(), Audiences: []string{supervisorbootstrap.Audience}, IssuedAt: now, NotBefore: now, Expiration: now.Add(300 * time.Second), JTI: rand.Text(), Substrate: actoridjwt.SubstrateClaims{Atespace: req.GetActor().GetAtespace(), ActorName: req.GetActor().GetName(), ActorUID: req.GetActorUid(), Supervisor: &actoridjwt.SupervisorClaims{SchemaVersion: supervisorbootstrap.Schema, Purpose: supervisorbootstrap.Purpose, Profile: activation.GetProfile(), ActivationID: activation.GetActivationId(), WorkerUID: activation.GetWorkerUid(), NodeName: caller.NodeName, NodeUID: caller.NodeUID, TemplateUID: activation.GetTemplateUid(), TemplateDigest: activation.GetTemplateDigest(), ImageDigest: activation.GetImageDigest(), LaunchDigest: activation.GetLaunchDigest()}}}
+	claims := bootstrapClaims(req, caller, activation, s.bootstrap.Issuer, time.Now().Truncate(time.Second))
 	token, err := s.bootstrap.Pool.SignJWT(claims)
 	if err != nil {
 		return nil, status.Error(codes.Unavailable, "supervisor signer unavailable")
 	}
 	return &ateapipb.MintSupervisorBootstrapResponse{Token: token}, nil
+}
+
+func (s *Server) currentBootstrapHost(ctx context.Context, caller *ateletauth.Caller, worker *ateapipb.Worker) bool {
+	node, err := s.bootstrap.Kubernetes.CoreV1().Nodes().Get(ctx, caller.NodeName, metav1.GetOptions{})
+	if err != nil || string(node.UID) != caller.NodeUID || node.DeletionTimestamp != nil {
+		return false
+	}
+	for _, expected := range []struct{ namespace, name, uid string }{
+		{worker.GetWorkerNamespace(), worker.GetWorkerPod(), worker.GetWorkerPodUid()},
+		{caller.Namespace, caller.PodName, caller.PodUID},
+	} {
+		pod, err := s.bootstrap.Kubernetes.CoreV1().Pods(expected.namespace).Get(ctx, expected.name, metav1.GetOptions{})
+		if err != nil || string(pod.UID) != expected.uid || pod.Spec.NodeName != caller.NodeName || pod.DeletionTimestamp != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func bootstrapClaims(req *ateapipb.MintSupervisorBootstrapRequest, caller *ateletauth.Caller, activation *ateapipb.SupervisorActivation, issuer string, now time.Time) *actoridjwt.Claims {
+	return &actoridjwt.Claims{
+		Issuer: issuer, Subject: "actor/" + req.GetActor().GetAtespace() + "/" + req.GetActor().GetName(),
+		Audiences: []string{supervisorbootstrap.Audience}, IssuedAt: now, NotBefore: now, Expiration: now.Add(300 * time.Second), JTI: rand.Text(),
+		Substrate: actoridjwt.SubstrateClaims{
+			Atespace: req.GetActor().GetAtespace(), ActorName: req.GetActor().GetName(), ActorUID: req.GetActorUid(),
+			Supervisor: &actoridjwt.SupervisorClaims{
+				SchemaVersion: supervisorbootstrap.Schema, Purpose: supervisorbootstrap.Purpose, Profile: activation.GetProfile(),
+				ActivationID: activation.GetActivationId(), WorkerUID: activation.GetWorkerUid(), NodeName: caller.NodeName, NodeUID: caller.NodeUID,
+				TemplateUID: activation.GetTemplateUid(), TemplateDigest: activation.GetTemplateDigest(), ImageDigest: activation.GetImageDigest(), LaunchDigest: activation.GetLaunchDigest(),
+			},
+		},
+	}
+}
+
+func (s *Server) bootstrapActor(ctx context.Context, req *ateapipb.MintSupervisorBootstrapRequest, caller *ateletauth.Caller) (*ateapipb.Actor, *ateapipb.Worker, error) {
+	actor, err := s.store.GetActor(ctx, resources.ActorRefFromObjectRef(req.GetActor()))
+	if err != nil {
+		return nil, nil, status.Error(codes.PermissionDenied, "supervisor bootstrap denied")
+	}
+	if req.GetActor().GetAtespace() == resources.GoldenActorAtespace || actor.GetMetadata().GetUid() != req.GetActorUid() {
+		return nil, nil, status.Error(codes.PermissionDenied, "supervisor bootstrap denied")
+	}
+	state := actor.GetStatus().GetState()
+	if state != ateapipb.ActorState_ACTOR_STATE_RESUMING && state != ateapipb.ActorState_ACTOR_STATE_RUNNING {
+		return nil, nil, status.Error(codes.PermissionDenied, "supervisor bootstrap denied")
+	}
+	activation := actor.GetStatus().GetSupervisorActivation()
+	assignment := actor.GetStatus().GetWorkerAssignment()
+	if activation == nil || activation.GetActivationId() != req.GetActivationId() || activation.GetWorkerUid() != req.GetWorkerUid() || assignment.GetWorkerPodUid() != req.GetWorkerUid() || assignment.GetNodeName() != caller.NodeName {
+		return nil, nil, status.Error(codes.PermissionDenied, "supervisor bootstrap denied")
+	}
+	worker, err := s.store.GetWorker(ctx, assignment.GetWorker().GetName())
+	if err != nil || worker.GetWorkerPodUid() != req.GetWorkerUid() || worker.GetNodeName() != caller.NodeName || worker.GetStatus().GetState() != ateapipb.WorkerState_WORKER_STATE_ACTIVE {
+		return nil, nil, status.Error(codes.PermissionDenied, "supervisor bootstrap denied")
+	}
+	bound, err := s.store.GetWorkerAssignment(ctx, worker.GetMetadata().GetName(), req.GetActorUid())
+	if err != nil || !proto.Equal(bound.GetActor(), req.GetActor()) || bound.GetActorUid() != req.GetActorUid() {
+		return nil, nil, status.Error(codes.PermissionDenied, "supervisor bootstrap denied")
+	}
+	return actor, worker, nil
+}
+
+func (s *Server) bootstrapTemplateMatches(ctx context.Context, actor *ateapipb.Actor) bool {
+	activation := actor.GetStatus().GetSupervisorActivation()
+	template, err := s.store.GetActorTemplate(ctx, resources.ActorTemplateRefFromObjectRef(actor.GetActorTemplate()))
+	if err != nil {
+		return false
+	}
+	expected, err := supervisorbootstrap.Describe(template)
+	if err != nil || expected == nil {
+		return false
+	}
+	expected.ActivationId, expected.WorkerUid = activation.GetActivationId(), activation.GetWorkerUid()
+	if !proto.Equal(expected, activation) {
+		return false
+	}
+	return true
 }

@@ -2319,5 +2319,5 @@ message MintSupervisorBootstrapRequest {
 
 message MintSupervisorBootstrapResponse {
   // Secret: delivered only over atelet mTLS, never actor metadata or logs.
-  string token = 1 [debug_redact = true];
+  string token = 1 [ debug_redact = true ];
 }

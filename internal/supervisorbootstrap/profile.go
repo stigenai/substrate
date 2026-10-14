@@ -38,6 +38,35 @@ var digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 // Describe validates the whole opt-in boundary. Nil means an ordinary template.
 func Describe(t *ateapipb.ActorTemplate) (*ateapipb.SupervisorActivation, error) {
+	selected, err := projection(t)
+	if err != nil || selected == nil {
+		return nil, err
+	}
+	if len(t.GetContainers()) != 1 {
+		return nil, fmt.Errorf("supervisor bootstrap requires one container")
+	}
+	c := t.GetContainers()[0]
+	if err := validateContainer(c, selected.GetName()); err != nil {
+		return nil, err
+	}
+	config := t.GetSnapshotConfig()
+	if config.GetOnPause() != ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA || config.GetOnCommit() != ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA || config.GetOnResume().GetFromData() != ateapipb.ResumeSource_RESUME_SOURCE_GOLDEN {
+		return nil, fmt.Errorf("supervisor bootstrap requires Data snapshots and Golden resume")
+	}
+	launch, image, err := binding(c)
+	if err != nil {
+		return nil, err
+	}
+	canonical := proto.CloneOf(t)
+	canonical.Metadata, canonical.Status = nil, nil
+	raw, err := (proto.MarshalOptions{Deterministic: true}).Marshal(canonical)
+	if err != nil {
+		return nil, err
+	}
+	return &ateapipb.SupervisorActivation{Profile: Profile, TemplateUid: t.GetMetadata().GetUid(), TemplateDigest: fmt.Sprintf("sha256:%x", sha256.Sum256(raw)), ImageDigest: image, LaunchDigest: launch}, nil
+}
+
+func projection(t *ateapipb.ActorTemplate) (*ateapipb.Volume, error) {
 	var selected *ateapipb.Volume
 	for _, v := range t.GetVolumes() {
 		for _, ds := range v.GetSystemInfo().GetDataSources() {
@@ -49,50 +78,41 @@ func Describe(t *ateapipb.ActorTemplate) (*ateapipb.SupervisorActivation, error)
 			}
 		}
 	}
-	if selected == nil {
-		return nil, nil
-	}
-	if len(t.GetContainers()) != 1 {
-		return nil, fmt.Errorf("supervisor bootstrap requires one container")
-	}
-	c := t.GetContainers()[0]
+	return selected, nil
+}
+
+func validateContainer(c *ateapipb.Container, volume string) error {
 	if len(c.GetCommand()) != 1 || c.GetCommand()[0] != "/usr/local/bin/ax-task-runner" || len(c.GetArgs()) != 0 {
-		return nil, fmt.Errorf("supervisor bootstrap requires the fixed AX runner")
+		return fmt.Errorf("supervisor bootstrap requires the fixed AX runner")
 	}
 	found := false
 	for _, m := range c.GetVolumeMounts() {
-		if m.GetName() == selected.GetName() {
+		if m.GetName() == volume {
 			if m.GetMountPath() != MountPath || found {
-				return nil, fmt.Errorf("supervisor bootstrap mount path differs")
+				return fmt.Errorf("supervisor bootstrap mount path differs")
 			}
 			found = true
 		}
 	}
 	if !found {
-		return nil, fmt.Errorf("supervisor bootstrap volume is not mounted")
+		return fmt.Errorf("supervisor bootstrap volume is not mounted")
 	}
-	config := t.GetSnapshotConfig()
-	if config.GetOnPause() != ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA || config.GetOnCommit() != ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA || config.GetOnResume().GetFromData() != ateapipb.ResumeSource_RESUME_SOURCE_GOLDEN {
-		return nil, fmt.Errorf("supervisor bootstrap requires Data snapshots and Golden resume")
-	}
+	return nil
+}
+
+func binding(c *ateapipb.Container) (string, string, error) {
 	launch := ""
 	for _, e := range c.GetEnv() {
 		if e.GetName() == "FACTORY_NATIVE_LAUNCH_DIGEST" {
 			if launch != "" || !digestPattern.MatchString(e.GetValue()) {
-				return nil, fmt.Errorf("supervisor launch digest invalid")
+				return "", "", fmt.Errorf("supervisor launch digest invalid")
 			}
 			launch = e.GetValue()
 		}
 	}
 	_, image, ok := strings.Cut(c.GetImage(), "@")
 	if launch == "" || !ok || !digestPattern.MatchString(image) {
-		return nil, fmt.Errorf("supervisor image and launch digests required")
+		return "", "", fmt.Errorf("supervisor image and launch digests required")
 	}
-	canonical := proto.CloneOf(t)
-	canonical.Metadata, canonical.Status = nil, nil
-	raw, err := (proto.MarshalOptions{Deterministic: true}).Marshal(canonical)
-	if err != nil {
-		return nil, err
-	}
-	return &ateapipb.SupervisorActivation{Profile: Profile, TemplateUid: t.GetMetadata().GetUid(), TemplateDigest: fmt.Sprintf("sha256:%x", sha256.Sum256(raw)), ImageDigest: image, LaunchDigest: launch}, nil
+	return launch, image, nil
 }

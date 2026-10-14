@@ -416,3 +416,37 @@ func (r *systemInfoVolumeRefresher) projecting(bundleName string) []*registeredA
 	}
 	return targets
 }
+
+func hasSupervisorProjection(spec *ateletpb.WorkloadSpec) bool {
+	for _, v := range spec.GetVolumes() {
+		for _, ds := range v.GetSystemInfo().GetDataSources() {
+			if ds.GetSupervisorBootstrap() != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Check before either Run or Restore can project a token into another worker.
+func validateSupervisorTarget(spec *ateletpb.WorkloadSpec, workerUID, atespace string) error {
+	for _, v := range spec.GetVolumes() {
+		for _, ds := range v.GetSystemInfo().GetDataSources() {
+			b := ds.GetSupervisorBootstrap()
+			if b == nil {
+				continue
+			}
+			if b.GetProfile() != supervisorbootstrap.Profile {
+				return fmt.Errorf("unsupported supervisor profile")
+			}
+			if atespace == resources.GoldenActorAtespace {
+				if b.GetActivationId() != "" || b.GetWorkerUid() != "" {
+					return fmt.Errorf("golden cannot carry supervisor activation")
+				}
+			} else if b.GetActivationId() == "" || b.GetWorkerUid() != workerUID {
+				return fmt.Errorf("supervisor target differs from assigned worker")
+			}
+		}
+	}
+	return nil
+}

@@ -16,6 +16,8 @@ syntax = "proto3";
 
 package ateom;
 
+import "pkg/proto/ateapipb/ateapi.proto";
+
 option go_package = "github.com/agent-substrate/substrate/internal/proto/ateompb";
 
 // Ateom is the interface to control a single gVisor (or, in the future microVM)
@@ -139,6 +141,7 @@ message TerminateWorkloadRequest {
 }
 
 message TerminateWorkloadResponse {
+  ateapi.SupervisorTerminationAck supervisor_stop = 1;
 }
 
 message RunWorkloadRequest {
@@ -180,6 +183,8 @@ message EgressGateway {
 // WorkloadSpec parallels Pod, but with far fewer configurable fields.
 message WorkloadSpec {
   repeated Container containers = 1;
+  // Retain this activation with the live workload before Run/Restore starts it.
+  ateapi.SupervisorActivation supervisor_activation = 2;
 }
 
 message Container {

@@ -25,6 +25,9 @@ service Control {
   // Get an Actor.
   rpc GetActor(GetActorRequest) returns (Actor) {}
 
+  // Read an immutable exact-activation deletion receipt. Missing proof is NotFound.
+  rpc GetSupervisorTermination(GetSupervisorTerminationRequest) returns (SupervisorTerminationReceipt) {}
+
   // Create a new Actor deriving from a given ActorTemplate.
   rpc CreateActor(CreateActorRequest) returns (Actor) {}
 
@@ -703,6 +706,12 @@ message ActorStatus {
   // Contains no credentials; a new resume receives a new identity.
   // +k8s:optional
   SupervisorActivation supervisor_activation = 10;
+
+  // Retained before releasing the worker assignment; never supplied by clients.
+  // +k8s:optional
+  SupervisorTerminationAck supervisor_stop = 11;
+  // +k8s:optional
+  string supervisor_stop_node = 12;
 }
 
 // SupervisorActivation is retained before a protected actor starts.
@@ -724,6 +733,36 @@ message SupervisorActivation {
   string launch_digest = 6;
   // +k8s:required
   string profile = 7;
+}
+
+// Produced only after stopping a runtime-held exact protected activation.
+message SupervisorTerminationAck {
+  string schema_version = 1;
+  string actor_uid = 2;
+  SupervisorActivation activation = 3;
+  string acknowledgement_id = 4;
+  google.protobuf.Timestamp terminated_at = 5;
+  // Exactly "gvisor" or "microvm".
+  string runtime = 6;
+}
+
+// Committed atomically with deletion of the exact Actor incarnation.
+message SupervisorTerminationReceipt {
+  string schema_version = 1;
+  string atespace = 2;
+  string actor_name = 3;
+  string actor_uid = 4;
+  SupervisorActivation activation = 5;
+  string node_name = 6;
+  SupervisorTerminationAck stop = 7;
+  string deletion_id = 8;
+  google.protobuf.Timestamp deleted_at = 9;
+}
+
+message GetSupervisorTerminationRequest {
+  ObjectRef actor = 1;
+  string actor_uid = 2;
+  string activation_id = 3;
 }
 
 // ActorCrash describes the failure that moved an Actor to CRASHED.

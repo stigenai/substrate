@@ -16,6 +16,8 @@ syntax = "proto3";
 
 package atelet;
 
+import "pkg/proto/ateapipb/ateapi.proto";
+
 option go_package = "github.com/agent-substrate/substrate/internal/proto/ateletpb";
 
 // AteomSupport provides callouts for ateom.
@@ -196,6 +198,7 @@ message TerminateRequest {
 }
 
 message TerminateResponse {
+  ateapi.SupervisorTerminationAck supervisor_stop = 1;
 }
 
 message RunRequest {
@@ -267,6 +270,8 @@ message SandboxAssets {
 message WorkloadSpec {
   repeated Container containers = 1;
   repeated Volume volumes = 2;
+  // Server-owned activation delivered only over the authenticated node path.
+  ateapi.SupervisorActivation supervisor_activation = 3;
 }
 
 message DurableDirVolume {

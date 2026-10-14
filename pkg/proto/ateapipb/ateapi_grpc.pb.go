@@ -34,6 +34,7 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	Control_GetActor_FullMethodName                   = "/ateapi.Control/GetActor"
+	Control_GetSupervisorTermination_FullMethodName   = "/ateapi.Control/GetSupervisorTermination"
 	Control_CreateActor_FullMethodName                = "/ateapi.Control/CreateActor"
 	Control_UpdateActor_FullMethodName                = "/ateapi.Control/UpdateActor"
 	Control_SuspendActor_FullMethodName               = "/ateapi.Control/SuspendActor"
@@ -78,6 +79,8 @@ const (
 type ControlClient interface {
 	// Get an Actor.
 	GetActor(ctx context.Context, in *GetActorRequest, opts ...grpc.CallOption) (*Actor, error)
+	// Read an immutable exact-activation deletion receipt. Missing proof is NotFound.
+	GetSupervisorTermination(ctx context.Context, in *GetSupervisorTerminationRequest, opts ...grpc.CallOption) (*SupervisorTerminationReceipt, error)
 	// Create a new Actor deriving from a given ActorTemplate.
 	CreateActor(ctx context.Context, in *CreateActorRequest, opts ...grpc.CallOption) (*Actor, error)
 	// Update mutable fields on an existing Actor.
@@ -177,6 +180,16 @@ func (c *controlClient) GetActor(ctx context.Context, in *GetActorRequest, opts 
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Actor)
 	err := c.cc.Invoke(ctx, Control_GetActor_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *controlClient) GetSupervisorTermination(ctx context.Context, in *GetSupervisorTerminationRequest, opts ...grpc.CallOption) (*SupervisorTerminationReceipt, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SupervisorTerminationReceipt)
+	err := c.cc.Invoke(ctx, Control_GetSupervisorTermination_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -531,6 +544,8 @@ func (c *controlClient) DeleteActorTemplate(ctx context.Context, in *DeleteActor
 type ControlServer interface {
 	// Get an Actor.
 	GetActor(context.Context, *GetActorRequest) (*Actor, error)
+	// Read an immutable exact-activation deletion receipt. Missing proof is NotFound.
+	GetSupervisorTermination(context.Context, *GetSupervisorTerminationRequest) (*SupervisorTerminationReceipt, error)
 	// Create a new Actor deriving from a given ActorTemplate.
 	CreateActor(context.Context, *CreateActorRequest) (*Actor, error)
 	// Update mutable fields on an existing Actor.
@@ -628,6 +643,9 @@ type UnimplementedControlServer struct{}
 
 func (UnimplementedControlServer) GetActor(context.Context, *GetActorRequest) (*Actor, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetActor not implemented")
+}
+func (UnimplementedControlServer) GetSupervisorTermination(context.Context, *GetSupervisorTerminationRequest) (*SupervisorTerminationReceipt, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetSupervisorTermination not implemented")
 }
 func (UnimplementedControlServer) CreateActor(context.Context, *CreateActorRequest) (*Actor, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateActor not implemented")
@@ -766,6 +784,24 @@ func _Control_GetActor_Handler(srv interface{}, ctx context.Context, dec func(in
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ControlServer).GetActor(ctx, req.(*GetActorRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Control_GetSupervisorTermination_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetSupervisorTerminationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlServer).GetSupervisorTermination(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Control_GetSupervisorTermination_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlServer).GetSupervisorTermination(ctx, req.(*GetSupervisorTerminationRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1392,6 +1428,10 @@ var Control_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetActor",
 			Handler:    _Control_GetActor_Handler,
+		},
+		{
+			MethodName: "GetSupervisorTermination",
+			Handler:    _Control_GetSupervisorTermination_Handler,
 		},
 		{
 			MethodName: "CreateActor",

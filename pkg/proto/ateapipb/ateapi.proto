@@ -739,6 +739,7 @@ message SupervisorActivation {
 message SupervisorTerminationAck {
   string schema_version = 1;
   string actor_uid = 2;
+  // +k8s:required
   SupervisorActivation activation = 3;
   string acknowledgement_id = 4;
   google.protobuf.Timestamp terminated_at = 5;
@@ -752,14 +753,17 @@ message SupervisorTerminationReceipt {
   string atespace = 2;
   string actor_name = 3;
   string actor_uid = 4;
+  // +k8s:required
   SupervisorActivation activation = 5;
   string node_name = 6;
+  // +k8s:required
   SupervisorTerminationAck stop = 7;
   string deletion_id = 8;
   google.protobuf.Timestamp deleted_at = 9;
 }
 
 message GetSupervisorTerminationRequest {
+  // +k8s:required
   ObjectRef actor = 1;
   string actor_uid = 2;
   string activation_id = 3;

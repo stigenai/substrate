@@ -1964,9 +1964,10 @@ func (x *SupervisorActivation) GetProfile() string {
 
 // Produced only after stopping a runtime-held exact protected activation.
 type SupervisorTerminationAck struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	SchemaVersion     string                 `protobuf:"bytes,1,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
-	ActorUid          string                 `protobuf:"bytes,2,opt,name=actor_uid,json=actorUid,proto3" json:"actor_uid,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SchemaVersion string                 `protobuf:"bytes,1,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
+	ActorUid      string                 `protobuf:"bytes,2,opt,name=actor_uid,json=actorUid,proto3" json:"actor_uid,omitempty"`
+	// +k8s:required
 	Activation        *SupervisorActivation  `protobuf:"bytes,3,opt,name=activation,proto3" json:"activation,omitempty"`
 	AcknowledgementId string                 `protobuf:"bytes,4,opt,name=acknowledgement_id,json=acknowledgementId,proto3" json:"acknowledgement_id,omitempty"`
 	TerminatedAt      *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=terminated_at,json=terminatedAt,proto3" json:"terminated_at,omitempty"`
@@ -2050,13 +2051,15 @@ func (x *SupervisorTerminationAck) GetRuntime() string {
 
 // Committed atomically with deletion of the exact Actor incarnation.
 type SupervisorTerminationReceipt struct {
-	state         protoimpl.MessageState    `protogen:"open.v1"`
-	SchemaVersion string                    `protobuf:"bytes,1,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
-	Atespace      string                    `protobuf:"bytes,2,opt,name=atespace,proto3" json:"atespace,omitempty"`
-	ActorName     string                    `protobuf:"bytes,3,opt,name=actor_name,json=actorName,proto3" json:"actor_name,omitempty"`
-	ActorUid      string                    `protobuf:"bytes,4,opt,name=actor_uid,json=actorUid,proto3" json:"actor_uid,omitempty"`
-	Activation    *SupervisorActivation     `protobuf:"bytes,5,opt,name=activation,proto3" json:"activation,omitempty"`
-	NodeName      string                    `protobuf:"bytes,6,opt,name=node_name,json=nodeName,proto3" json:"node_name,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SchemaVersion string                 `protobuf:"bytes,1,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
+	Atespace      string                 `protobuf:"bytes,2,opt,name=atespace,proto3" json:"atespace,omitempty"`
+	ActorName     string                 `protobuf:"bytes,3,opt,name=actor_name,json=actorName,proto3" json:"actor_name,omitempty"`
+	ActorUid      string                 `protobuf:"bytes,4,opt,name=actor_uid,json=actorUid,proto3" json:"actor_uid,omitempty"`
+	// +k8s:required
+	Activation *SupervisorActivation `protobuf:"bytes,5,opt,name=activation,proto3" json:"activation,omitempty"`
+	NodeName   string                `protobuf:"bytes,6,opt,name=node_name,json=nodeName,proto3" json:"node_name,omitempty"`
+	// +k8s:required
 	Stop          *SupervisorTerminationAck `protobuf:"bytes,7,opt,name=stop,proto3" json:"stop,omitempty"`
 	DeletionId    string                    `protobuf:"bytes,8,opt,name=deletion_id,json=deletionId,proto3" json:"deletion_id,omitempty"`
 	DeletedAt     *timestamppb.Timestamp    `protobuf:"bytes,9,opt,name=deleted_at,json=deletedAt,proto3" json:"deleted_at,omitempty"`
@@ -2158,10 +2161,11 @@ func (x *SupervisorTerminationReceipt) GetDeletedAt() *timestamppb.Timestamp {
 }
 
 type GetSupervisorTerminationRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Actor         *ObjectRef             `protobuf:"bytes,1,opt,name=actor,proto3" json:"actor,omitempty"`
-	ActorUid      string                 `protobuf:"bytes,2,opt,name=actor_uid,json=actorUid,proto3" json:"actor_uid,omitempty"`
-	ActivationId  string                 `protobuf:"bytes,3,opt,name=activation_id,json=activationId,proto3" json:"activation_id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// +k8s:required
+	Actor         *ObjectRef `protobuf:"bytes,1,opt,name=actor,proto3" json:"actor,omitempty"`
+	ActorUid      string     `protobuf:"bytes,2,opt,name=actor_uid,json=actorUid,proto3" json:"actor_uid,omitempty"`
+	ActivationId  string     `protobuf:"bytes,3,opt,name=activation_id,json=activationId,proto3" json:"activation_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

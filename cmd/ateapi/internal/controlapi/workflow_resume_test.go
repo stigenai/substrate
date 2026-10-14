@@ -1238,9 +1238,13 @@ func TestLoadActorForResume_RunningActorShortCircuits(t *testing.T) {
 type capturingAtelet struct {
 	ateletpb.UnimplementedAteomHerderServer
 
-	mu      sync.Mutex
-	restore *ateletpb.RestoreRequest
-	run     *ateletpb.RunRequest
+	mu             sync.Mutex
+	restore        *ateletpb.RestoreRequest
+	run            *ateletpb.RunRequest
+	stop           *ateapipb.SupervisorTerminationAck
+	terminate      *ateletpb.TerminateRequest
+	terminateErr   error
+	terminateCalls int
 }
 
 func (f *capturingAtelet) Restore(ctx context.Context, req *ateletpb.RestoreRequest) (*ateletpb.RestoreResponse, error) {

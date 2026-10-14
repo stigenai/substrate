@@ -51,6 +51,7 @@ import (
 	"github.com/agent-substrate/substrate/internal/resources"
 	"github.com/agent-substrate/substrate/internal/serverboot"
 	"github.com/agent-substrate/substrate/internal/substratex509"
+	"github.com/agent-substrate/substrate/internal/supervisortermination"
 	"github.com/agent-substrate/substrate/internal/version"
 	"github.com/agent-substrate/substrate/internal/volume"
 	atev1alpha1 "github.com/agent-substrate/substrate/pkg/api/v1alpha1"
@@ -76,6 +77,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -1343,7 +1345,7 @@ func (s *AteomHerder) Terminate(ctx context.Context, req *ateletpb.TerminateRequ
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid workload spec: %v", err)
 	}
-	if _, err := client.TerminateWorkload(ctx, &ateompb.TerminateWorkloadRequest{
+	response, terminateErr := client.TerminateWorkload(ctx, &ateompb.TerminateWorkloadRequest{
 		Atespace:              req.GetAtespace(),
 		ActorName:             req.GetActorName(),
 		ActorUid:              req.GetActorUid(),
@@ -1352,12 +1354,21 @@ func (s *AteomHerder) Terminate(ctx context.Context, req *ateletpb.TerminateRequ
 		RunscPath:             runscPathFor(assetPaths),
 		Spec:                  spec,
 		ActorDirs:             ateletpath.ActorDirs(actorUID),
-	}); err != nil {
+	})
+	if err := terminateErr; err != nil {
 		if status.Code(err) == codes.NotFound {
 			slog.InfoContext(ctx, "workload not found on ateom during terminate", slog.Any("actor", actorRef), slog.String("actorUID", actorUID))
 		} else {
 			return nil, fmt.Errorf("failed calling ateom.TerminateWorkload (actor: %s, actorUID: %s): %w", actorRef, actorUID, err)
 		}
+	}
+
+	var stop *ateapipb.SupervisorTerminationAck
+	if response.GetSupervisorStop() != nil {
+		if err := supervisortermination.ValidateAck(actorUID, spec.GetSupervisorActivation(), response.GetSupervisorStop()); err != nil {
+			return nil, status.Error(codes.FailedPrecondition, "runtime termination identity differs")
+		}
+		stop = proto.CloneOf(response.GetSupervisorStop())
 	}
 
 	// Deregister after teardown succeeds
@@ -1382,7 +1393,7 @@ func (s *AteomHerder) Terminate(ctx context.Context, req *ateletpb.TerminateRequ
 		return nil, fmt.Errorf("failed to remove actor directories during terminate (actor: %s, actorUID: %s): %w", actorRef, actorUID, err)
 	}
 
-	return &ateletpb.TerminateResponse{}, nil
+	return &ateletpb.TerminateResponse{SupervisorStop: stop}, nil
 }
 
 // copyLocalCheckpoint stages files from the local checkpoint snapshotName under
@@ -1643,7 +1654,7 @@ func buildAteomWorkloadSpec(spec *ateletpb.WorkloadSpec) (*ateompb.WorkloadSpec,
 		volumes[name] = vol
 	}
 
-	out := &ateompb.WorkloadSpec{}
+	out := &ateompb.WorkloadSpec{SupervisorActivation: proto.CloneOf(spec.GetSupervisorActivation())}
 	for _, ctr := range spec.GetContainers() {
 		var ddMounts []*ateompb.DurableDirVolumeMount
 		var csiMounts []*ateompb.VolumeMount

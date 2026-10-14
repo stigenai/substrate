@@ -206,3 +206,26 @@ func TestUnaryServerInterceptor_MalformedRequestRequiresPrincipalThenDelegatesVa
 		t.Fatalf("expected Internal when authorizer is nil, got %v", err)
 	}
 }
+
+func TestSupervisorTerminationRequiresAtespaceAuthorization(t *testing.T) {
+	authorizer := setupTestAuthorizer(t)
+	req := &ateapipb.GetSupervisorTerminationRequest{Actor: &ateapipb.ObjectRef{Atespace: "team-a", Name: "actor-a"}, ActorUid: "exact", ActivationId: "exact"}
+	relation, object, err := defaultRPCPermissions[ateapipb.Control_GetSupervisorTermination_FullMethodName](req)
+	if err != nil || relation != RelationCanGet || object != AtespaceObject("team-a") {
+		t.Fatalf("wrong authorization target: %s %s %v", relation, object, err)
+	}
+	for _, tc := range []struct {
+		principal string
+		code      codes.Code
+	}{{"", codes.Unauthenticated}, {"bob@example.com", codes.PermissionDenied}, {"alice@example.com", codes.OK}} {
+		ctx := context.Background()
+		if tc.principal != "" {
+			ctx = principal.InjectContext(ctx, principal.PrincipalInfo{ID: tc.principal, Kind: principal.KindJWT})
+		}
+		called := false
+		_, err := UnaryServerInterceptor(authorizer)(ctx, req, &grpc.UnaryServerInfo{FullMethod: ateapipb.Control_GetSupervisorTermination_FullMethodName}, func(context.Context, any) (any, error) { called = true; return nil, nil })
+		if status.Code(err) != tc.code || called != (tc.code == codes.OK) {
+			t.Fatalf("principal %q: code %v called %v", tc.principal, status.Code(err), called)
+		}
+	}
+}

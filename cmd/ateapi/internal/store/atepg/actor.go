@@ -134,8 +134,13 @@ func (p *Persistence) UpdateActor(ctx context.Context, actorRef resources.ActorR
 
 func (p *Persistence) DeleteActor(ctx context.Context, actorRef resources.ActorRef, precondition store.DeletePreconditions) (*ateapipb.Actor, error) {
 	atespace, name := actorRef.Atespace, actorRef.Name
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op once committed
 	var protoBytes []byte
-	err := p.pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		DELETE FROM actors
 		WHERE atespace = $1 AND name = $2
 		  AND ($3::text = '' OR uid = $3::text)
@@ -144,7 +149,7 @@ func (p *Persistence) DeleteActor(ctx context.Context, actorRef resources.ActorR
 	if errors.Is(err, pgx.ErrNoRows) {
 		var uid string
 		var version int64
-		err := p.pool.QueryRow(ctx, `SELECT uid, version FROM actors WHERE atespace = $1 AND name = $2`, atespace, name).Scan(&uid, &version)
+		err := tx.QueryRow(ctx, `SELECT uid, version FROM actors WHERE atespace = $1 AND name = $2`, atespace, name).Scan(&uid, &version)
 		return nil, mapDeleteError(err, uid, version, precondition)
 	}
 	if err != nil {
@@ -153,6 +158,12 @@ func (p *Persistence) DeleteActor(ctx context.Context, actorRef resources.ActorR
 	out := &ateapipb.Actor{}
 	if err := unmarshalStored(protoBytes, out); err != nil {
 		return nil, fmt.Errorf("unmarshaling deleted actor: %w", err)
+	}
+	if err := retainSupervisorTermination(ctx, tx, out); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

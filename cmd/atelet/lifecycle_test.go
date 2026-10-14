@@ -28,6 +28,7 @@ import (
 	"github.com/agent-substrate/substrate/internal/nodepath"
 	"github.com/agent-substrate/substrate/internal/proto/ateletpb"
 	"github.com/agent-substrate/substrate/internal/proto/ateompb"
+	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 )
@@ -59,7 +60,10 @@ type fakeAteom struct {
 	// most recent RestoreWorkload.
 	restored map[string]string
 	// actorDirs records the ActorDirs each RPC arrived with, by RPC name.
-	actorDirs map[string]*ateompb.ActorDirs
+	actorDirs      map[string]*ateompb.ActorDirs
+	supervisorStop *ateapipb.SupervisorTerminationAck
+	terminateErr   error
+	terminatedSpec *ateompb.WorkloadSpec
 }
 
 func (f *fakeAteom) recordActorDirs(rpc string, actorDirs *ateompb.ActorDirs) {
@@ -103,7 +107,8 @@ func (f *fakeAteom) RestoreWorkload(_ context.Context, req *ateompb.RestoreWorkl
 
 func (f *fakeAteom) TerminateWorkload(_ context.Context, req *ateompb.TerminateWorkloadRequest) (*ateompb.TerminateWorkloadResponse, error) {
 	f.recordActorDirs("TerminateWorkload", req.GetActorDirs())
-	return &ateompb.TerminateWorkloadResponse{}, nil
+	f.terminatedSpec = proto.CloneOf(req.GetSpec())
+	return &ateompb.TerminateWorkloadResponse{SupervisorStop: proto.CloneOf(f.supervisorStop)}, f.terminateErr
 }
 
 // serveFakeAteom serves ateom on a unix socket and points atelet's dialer at

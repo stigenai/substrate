@@ -147,8 +147,5 @@ func (s *Server) bootstrapTemplateMatches(ctx context.Context, actor *ateapipb.A
 		return false
 	}
 	expected.ActivationId, expected.WorkerUid = activation.GetActivationId(), activation.GetWorkerUid()
-	if !proto.Equal(expected, activation) {
-		return false
-	}
-	return true
+	return proto.Equal(expected, activation)
 }

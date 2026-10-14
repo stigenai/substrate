@@ -1537,6 +1537,7 @@ var Control_ServiceDesc = grpc.ServiceDesc{
 const (
 	WorkerService_SetWorkerCapacity_FullMethodName         = "/ateapi.WorkerService/SetWorkerCapacity"
 	WorkerService_MintAteomActorCertificate_FullMethodName = "/ateapi.WorkerService/MintAteomActorCertificate"
+	WorkerService_MintSupervisorBootstrap_FullMethodName   = "/ateapi.WorkerService/MintSupervisorBootstrap"
 	WorkerService_RequestActorSuspend_FullMethodName       = "/ateapi.WorkerService/RequestActorSuspend"
 )
 
@@ -1562,6 +1563,8 @@ type WorkerServiceClient interface {
 	//
 	// SPIFFE URI: spiffe://${trustdomain}/ateom-for-actor/${atespace}/${actor}
 	MintAteomActorCertificate(ctx context.Context, in *MintAteomActorCertificateRequest, opts ...grpc.CallOption) (*MintAteomActorCertificateResponse, error)
+	// Mint a protected per-activation credential for the assigned atelet only.
+	MintSupervisorBootstrap(ctx context.Context, in *MintSupervisorBootstrapRequest, opts ...grpc.CallOption) (*MintSupervisorBootstrapResponse, error)
 	// RequestActorSuspend asks the control plane to suspend an Actor that the
 	// calling Worker hosts. Only the Worker can observe what makes an Actor
 	// worth reclaiming -- whether its workload still has anything to do -- and
@@ -1612,6 +1615,16 @@ func (c *workerServiceClient) MintAteomActorCertificate(ctx context.Context, in 
 	return out, nil
 }
 
+func (c *workerServiceClient) MintSupervisorBootstrap(ctx context.Context, in *MintSupervisorBootstrapRequest, opts ...grpc.CallOption) (*MintSupervisorBootstrapResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(MintSupervisorBootstrapResponse)
+	err := c.cc.Invoke(ctx, WorkerService_MintSupervisorBootstrap_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *workerServiceClient) RequestActorSuspend(ctx context.Context, in *RequestActorSuspendRequest, opts ...grpc.CallOption) (*RequestActorSuspendResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RequestActorSuspendResponse)
@@ -1644,6 +1657,8 @@ type WorkerServiceServer interface {
 	//
 	// SPIFFE URI: spiffe://${trustdomain}/ateom-for-actor/${atespace}/${actor}
 	MintAteomActorCertificate(context.Context, *MintAteomActorCertificateRequest) (*MintAteomActorCertificateResponse, error)
+	// Mint a protected per-activation credential for the assigned atelet only.
+	MintSupervisorBootstrap(context.Context, *MintSupervisorBootstrapRequest) (*MintSupervisorBootstrapResponse, error)
 	// RequestActorSuspend asks the control plane to suspend an Actor that the
 	// calling Worker hosts. Only the Worker can observe what makes an Actor
 	// worth reclaiming -- whether its workload still has anything to do -- and
@@ -1679,6 +1694,9 @@ func (UnimplementedWorkerServiceServer) SetWorkerCapacity(context.Context, *SetW
 }
 func (UnimplementedWorkerServiceServer) MintAteomActorCertificate(context.Context, *MintAteomActorCertificateRequest) (*MintAteomActorCertificateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method MintAteomActorCertificate not implemented")
+}
+func (UnimplementedWorkerServiceServer) MintSupervisorBootstrap(context.Context, *MintSupervisorBootstrapRequest) (*MintSupervisorBootstrapResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method MintSupervisorBootstrap not implemented")
 }
 func (UnimplementedWorkerServiceServer) RequestActorSuspend(context.Context, *RequestActorSuspendRequest) (*RequestActorSuspendResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RequestActorSuspend not implemented")
@@ -1740,6 +1758,24 @@ func _WorkerService_MintAteomActorCertificate_Handler(srv interface{}, ctx conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WorkerService_MintSupervisorBootstrap_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(MintSupervisorBootstrapRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkerServiceServer).MintSupervisorBootstrap(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkerService_MintSupervisorBootstrap_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkerServiceServer).MintSupervisorBootstrap(ctx, req.(*MintSupervisorBootstrapRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _WorkerService_RequestActorSuspend_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RequestActorSuspendRequest)
 	if err := dec(in); err != nil {
@@ -1772,6 +1808,10 @@ var WorkerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "MintAteomActorCertificate",
 			Handler:    _WorkerService_MintAteomActorCertificate_Handler,
+		},
+		{
+			MethodName: "MintSupervisorBootstrap",
+			Handler:    _WorkerService_MintSupervisorBootstrap_Handler,
 		},
 		{
 			MethodName: "RequestActorSuspend",

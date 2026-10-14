@@ -331,6 +331,7 @@ func main() {
 		serverboot.Fatal(ctx, "Failed to create ateapi client", err)
 	}
 	defer ateapiConn.Close()
+	systemInfoVolumes.bootstrap = ateapipb.NewWorkerServiceClient(ateapiConn)
 
 	lis, err := net.Listen("tcp", ":"+strconv.Itoa(*port))
 	if err != nil {

@@ -23,6 +23,7 @@ import (
 	"github.com/distribution/reference"
 
 	"github.com/agent-substrate/substrate/internal/resources"
+	"github.com/agent-substrate/substrate/internal/supervisorbootstrap"
 	"github.com/agent-substrate/substrate/internal/volumepath"
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	"k8s.io/apimachinery/pkg/api/operation"
@@ -64,6 +65,9 @@ func ValidateActorTemplateUpdate(ctx context.Context, fldPath *field.Path, newVa
 // ValidateCustom_CreateActorTemplateRequest_ActorTemplate rejects container
 // volume mounts that reference volumes the template does not declare.
 func ValidateCustom_CreateActorTemplateRequest_ActorTemplate(_ context.Context, _ operation.Operation, fldPath *field.Path, value, _ *ateapipb.ActorTemplate) field.ErrorList {
+	if _, err := supervisorbootstrap.Describe(value); err != nil {
+		return field.ErrorList{field.Invalid(fldPath, "supervisor bootstrap", err.Error())}
+	}
 	declared := make(map[string]bool, len(value.GetVolumes()))
 	for _, vol := range value.GetVolumes() {
 		declared[vol.GetName()] = true

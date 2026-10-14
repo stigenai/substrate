@@ -31,6 +31,7 @@ import (
 type Caller struct {
 	PodName  string
 	NodeName string
+	NodeUID  string
 }
 
 // Authenticate verifies that the RPC arrived over mTLS from an atelet
@@ -77,7 +78,7 @@ func Authenticate(ctx context.Context, ateletSPIFFEID string) (*Caller, error) {
 		return nil, denied()
 	}
 
-	return &Caller{PodName: identity.PodName, NodeName: identity.NodeName}, nil
+	return &Caller{PodName: identity.PodName, NodeName: identity.NodeName, NodeUID: identity.NodeUID}, nil
 }
 
 // denied is deliberately uniform: a caller learns that it is not atelet, and

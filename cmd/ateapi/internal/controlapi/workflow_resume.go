@@ -26,7 +26,9 @@ import (
 	"github.com/agent-substrate/substrate/internal/ateattr"
 	"github.com/agent-substrate/substrate/internal/proto/ateletpb"
 	"github.com/agent-substrate/substrate/internal/resources"
+	"github.com/agent-substrate/substrate/internal/supervisorbootstrap"
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
+	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -177,6 +179,9 @@ func (w *ActorWorkflow) loadActorForResume(ctx context.Context, actorRef resourc
 
 	actorTemplate, err := resolveActorTemplate(ctx, w.store, actor)
 	if err != nil {
+		return nil, nil, src, err
+	}
+	if err := w.validateSupervisorRestore(ctx, actor, actorTemplate); err != nil {
 		return nil, nil, src, err
 	}
 	if uri := actor.GetStatus().GetExternalSnapshot().GetSnapshotUri(); uri != "" {
@@ -475,6 +480,11 @@ func (w *ActorWorkflow) assignWorkerAttempt(ctx context.Context, actorRef resour
 		}
 	}()
 
+	activation, err := supervisorbootstrap.Describe(actorTemplate)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	constraints, err := schedulingConstraints(actor, actorTemplate)
 	if err != nil {
 		return nil, nil, err
@@ -527,10 +537,17 @@ func (w *ActorWorkflow) assignWorkerAttempt(ctx context.Context, actorRef resour
 		return nil, nil, err
 	}
 
+	if activation != nil && actorRef.Atespace != resources.GoldenActorAtespace {
+		activation.ActivationId = uuid.NewString()
+		activation.WorkerUid = assignedWorker.GetWorkerPodUid()
+	} else {
+		activation = nil
+	}
 	newAssignment := workerAssignmentFrom(assignedWorker)
 	storedActor, err := w.store.UpdateActor(ctx, actorRef, store.PreconditionFrom(actor), func(toUpdate *ateapipb.Actor) error {
 		toUpdate.Status.State = ateapipb.ActorState_ACTOR_STATE_RESUMING
 		toUpdate.Status.WorkerAssignment = newAssignment
+		toUpdate.Status.SupervisorActivation = activation
 		return nil
 	})
 	if err != nil {
@@ -830,4 +847,33 @@ func (w *ActorWorkflow) finalizeRunning(ctx context.Context, actorRef resources.
 	}
 	logActorStateChanged(ctx, storedActor, ateattr.OperationResume)
 	return storedActor, nil
+}
+
+// Protected profiles never restore credential-bearing application memory.
+func (w *ActorWorkflow) validateSupervisorRestore(ctx context.Context, actor *ateapipb.Actor, template *ateapipb.ActorTemplate) error {
+	profile, err := supervisorbootstrap.Describe(template)
+	if err != nil {
+		return err
+	}
+	if profile == nil || actor.GetMetadata().GetAtespace() == resources.GoldenActorAtespace {
+		return nil
+	}
+	if local := actor.GetStatus().GetLocalSnapshot(); local != nil && local.GetContentScope() != ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA {
+		return status.Error(codes.FailedPrecondition, "protected supervisor cannot restore a Full local snapshot")
+	}
+	if snapshot := actor.GetStatus().GetExternalSnapshot(); snapshot != nil && snapshot.GetContentScope() != ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_DATA {
+		// An initial, template-owned golden snapshot is credential-free by construction.
+		tagRef := template.GetStatus().GetGoldenSnapshotStatus().GetGoldenTag()
+		if actor.GetStatus().GetSupervisorActivation() != nil || tagRef == nil {
+			return status.Error(codes.FailedPrecondition, "protected supervisor requires credential-free golden")
+		}
+		tag, err := w.store.GetTag(ctx, resources.TagRefFromObjectRef(tagRef))
+		if err != nil {
+			return err
+		}
+		if snapshot.GetSnapshotUri() != tag.GetStatus().GetSnapshot().GetSnapshotUri() || tag.GetStatus().GetActorTemplateUid() != template.GetMetadata().GetUid() {
+			return status.Error(codes.FailedPrecondition, "protected supervisor cannot restore a Full actor snapshot")
+		}
+	}
+	return nil
 }

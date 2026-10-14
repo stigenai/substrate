@@ -35,9 +35,10 @@ type Claims struct {
 }
 
 type SubstrateClaims struct {
-	Atespace  string
-	ActorName string
-	ActorUID  string
+	Atespace   string
+	ActorName  string
+	ActorUID   string
+	Supervisor *SupervisorClaims
 }
 
 type WireClaims struct {
@@ -55,9 +56,10 @@ type WireClaims struct {
 }
 
 type WireSubstrateClaims struct {
-	Atespace  string `json:"atespace,omitempty"`
-	ActorName string `json:"actorName,omitempty"`
-	ActorUID  string `json:"actorUID,omitempty"`
+	Atespace   string            `json:"atespace,omitempty"`
+	ActorName  string            `json:"actorName,omitempty"`
+	ActorUID   string            `json:"actorUID,omitempty"`
+	Supervisor *SupervisorClaims `json:"supervisor,omitempty"`
 }
 
 func ClaimsToWire(claims *Claims) (*WireClaims, error) {
@@ -75,11 +77,27 @@ func ClaimsToWire(claims *Claims) (*WireClaims, error) {
 		IssuedAt:   float64(claims.IssuedAt.Unix()),
 		JTI:        claims.JTI,
 		Substrate: WireSubstrateClaims{
-			Atespace:  claims.Substrate.Atespace,
-			ActorName: claims.Substrate.ActorName,
-			ActorUID:  claims.Substrate.ActorUID,
+			Atespace:   claims.Substrate.Atespace,
+			ActorName:  claims.Substrate.ActorName,
+			ActorUID:   claims.Substrate.ActorUID,
+			Supervisor: claims.Substrate.Supervisor,
 		},
 	}
 
 	return wire, nil
+}
+
+// SupervisorClaims cannot be supplied through the generic actor JWT RPC.
+type SupervisorClaims struct {
+	SchemaVersion  string `json:"schema_version"`
+	Purpose        string `json:"purpose"`
+	Profile        string `json:"profile"`
+	ActivationID   string `json:"activation_id"`
+	WorkerUID      string `json:"worker_uid"`
+	NodeName       string `json:"node_name"`
+	NodeUID        string `json:"node_uid"`
+	TemplateUID    string `json:"template_uid"`
+	TemplateDigest string `json:"template_digest"`
+	ImageDigest    string `json:"image_digest"`
+	LaunchDigest   string `json:"launch_digest"`
 }

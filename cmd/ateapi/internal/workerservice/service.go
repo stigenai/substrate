@@ -41,6 +41,7 @@ type Server struct {
 	ateletSPIFFEID string
 
 	actorIDCAPool localca.Pool
+	bootstrap     *BootstrapConfig
 }
 
 // actorSuspender is the in-process slice of the Control service this package
@@ -51,11 +52,12 @@ type actorSuspender interface {
 
 var _ ateapipb.WorkerServiceServer = (*Server)(nil)
 
-func New(store store.Interface, suspender actorSuspender, ateletSPIFFEID string, actorIDCAPool localca.Pool) *Server {
+func New(store store.Interface, suspender actorSuspender, ateletSPIFFEID string, actorIDCAPool localca.Pool, bootstrap *BootstrapConfig) *Server {
 	return &Server{
 		store:          store,
 		suspender:      suspender,
 		ateletSPIFFEID: ateletSPIFFEID,
 		actorIDCAPool:  actorIDCAPool,
+		bootstrap:      bootstrap,
 	}
 }

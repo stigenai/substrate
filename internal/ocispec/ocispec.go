@@ -109,9 +109,10 @@ func Build(o Options) *specs.Spec {
 			},
 			Rlimits: []specs.POSIXRlimit{
 				{
+					// a git- or dolt-backed tool opens hundreds of files at once; 1024 left them failing
 					Type: "RLIMIT_NOFILE",
-					Hard: 1024,
-					Soft: 1024,
+					Hard: 65536,
+					Soft: 65536,
 				},
 			},
 		},

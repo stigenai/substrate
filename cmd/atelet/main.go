@@ -331,6 +331,7 @@ func main() {
 		serverboot.Fatal(ctx, "Failed to create ateapi client", err)
 	}
 	defer ateapiConn.Close()
+	systemInfoVolumes.bootstrap = ateapipb.NewWorkerServiceClient(ateapiConn)
 
 	lis, err := net.Listen("tcp", ":"+strconv.Itoa(*port))
 	if err != nil {
@@ -1788,6 +1789,9 @@ func validateRunRequest(req *ateletpb.RunRequest) error {
 	if err := resources.ValidateAteomUID(req.GetTargetAteomUid()); err != nil {
 		return err
 	}
+	if err := validateSupervisorTarget(req.GetSpec(), req.GetTargetAteomUid(), req.GetAtespace()); err != nil {
+		return err
+	}
 	names := make([]string, 0, len(req.GetSpec().GetContainers()))
 	for _, ctr := range req.GetSpec().GetContainers() {
 		names = append(names, ctr.GetName())
@@ -1806,6 +1810,9 @@ func validateCheckpointRequest(req *ateletpb.CheckpointRequest) error {
 	// TODO: Migrate all validations below to the validation framework.
 	if err := resources.ValidateAteomUID(req.GetTargetAteomUid()); err != nil {
 		return err
+	}
+	if req.GetAtespace() != resources.GoldenActorAtespace && hasSupervisorProjection(req.GetSpec()) && req.GetScope() != ateletpb.SnapshotScope_SNAPSHOT_SCOPE_DATA {
+		return fmt.Errorf("protected supervisor checkpoints must exclude guest memory")
 	}
 	names := make([]string, 0, len(req.GetSpec().GetContainers()))
 	for _, ctr := range req.GetSpec().GetContainers() {
@@ -1851,6 +1858,9 @@ func validateRestoreRequest(req *ateletpb.RestoreRequest) error {
 	}
 	// TODO: Migrate all validations below to the validation framework.
 	if err := resources.ValidateAteomUID(req.GetTargetAteomUid()); err != nil {
+		return err
+	}
+	if err := validateSupervisorTarget(req.GetSpec(), req.GetTargetAteomUid(), req.GetAtespace()); err != nil {
 		return err
 	}
 	names := make([]string, 0, len(req.GetSpec().GetContainers()))

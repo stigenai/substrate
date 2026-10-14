@@ -314,10 +314,18 @@ message TrustBundleDataSource {
   string name = 2;
 }
 
+// Non-secret server-retained activation identity; atelet fetches its credential.
+message SupervisorBootstrapDataSource {
+  string profile = 1;
+  string activation_id = 2;
+  string worker_uid = 3;
+}
+
 message SystemInfoDataSource {
   oneof data_source {
     ActorMetadataDataSource actor_metadata = 1;
     TrustBundleDataSource trust_bundle = 2;
+    SupervisorBootstrapDataSource supervisor_bootstrap = 3;
   }
 }
 

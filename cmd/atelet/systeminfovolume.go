@@ -30,7 +30,9 @@ import (
 	"github.com/agent-substrate/substrate/internal/pemutil"
 	"github.com/agent-substrate/substrate/internal/proto/ateletpb"
 	"github.com/agent-substrate/substrate/internal/resources"
+	"github.com/agent-substrate/substrate/internal/supervisorbootstrap"
 	"github.com/agent-substrate/substrate/internal/volumepath"
+	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	certsv1beta1 "k8s.io/api/certificates/v1beta1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	certlisters "k8s.io/client-go/listers/certificates/v1beta1"
@@ -87,7 +89,8 @@ type systemInfoVolumeRefresher struct {
 	mu sync.Mutex
 	// TODO(#1372): in memory only; an atelet restart drops the registry until
 	// each actor's next Run/Restore.
-	actors map[string]*registeredActor
+	actors    map[string]*registeredActor
+	bootstrap ateapipb.WorkerServiceClient
 }
 
 // newSystemInfoVolumeRefresher subscribes to ClusterTrustBundle events.
@@ -158,6 +161,24 @@ func (r *systemInfoVolumeRefresher) collectData(ref resources.ActorRef, actorUID
 	bundleHashes = map[string]string{}
 	for _, dataSourceAny := range si.GetDataSources() {
 		switch dataSource := dataSourceAny.GetDataSource().(type) {
+		case *ateletpb.SystemInfoDataSource_SupervisorBootstrap:
+			if len(si.GetDataSources()) != 1 || dataSource.SupervisorBootstrap.GetProfile() != supervisorbootstrap.Profile {
+				return nil, nil, fmt.Errorf("invalid protected supervisor projection")
+			}
+			if ref.Atespace == resources.GoldenActorAtespace {
+				continue
+			}
+			b := dataSource.SupervisorBootstrap
+			if r.bootstrap == nil || b.GetActivationId() == "" || b.GetWorkerUid() == "" {
+				return nil, nil, fmt.Errorf("protected supervisor issuer unavailable")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			response, mintErr := r.bootstrap.MintSupervisorBootstrap(ctx, &ateapipb.MintSupervisorBootstrapRequest{Actor: ref.ToObjectRef(), ActorUid: actorUID, ActivationId: b.GetActivationId(), WorkerUid: b.GetWorkerUid()})
+			cancel()
+			if mintErr != nil || response.GetToken() == "" {
+				return nil, nil, fmt.Errorf("protected supervisor issuance failed")
+			}
+			payload[supervisorbootstrap.FileName] = []byte(response.GetToken())
 		case *ateletpb.SystemInfoDataSource_TrustBundle:
 			tb := dataSource.TrustBundle
 			objectName, raw, err := rawTrustBundle(r.lister, tb.GetName())
@@ -198,8 +219,19 @@ func (r *systemInfoVolumeRefresher) write(ref resources.ActorRef, actorUID strin
 	if err != nil {
 		return fmt.Errorf("while collecting volume contents: %w", err)
 	}
-	if err := os.MkdirAll(v.Root, 0o755); err != nil {
+	dirMode, fileMode := os.FileMode(0o755), os.FileMode(0o644)
+	for _, ds := range v.Spec.GetDataSources() {
+		if ds.GetSupervisorBootstrap() != nil {
+			dirMode, fileMode = 0o700, 0o600
+		}
+	}
+	if err := os.MkdirAll(v.Root, dirMode); err != nil {
 		return fmt.Errorf("while creating %q: %w", v.Root, err)
+	}
+	if dirMode == 0o700 {
+		if err := os.Chmod(v.Root, dirMode); err != nil {
+			return err
+		}
 	}
 	root, err := os.OpenRoot(v.Root)
 	if err != nil {
@@ -207,7 +239,7 @@ func (r *systemInfoVolumeRefresher) write(ref resources.ActorRef, actorUID strin
 	}
 	defer root.Close()
 	for _, relPath := range slices.Sorted(maps.Keys(payload)) {
-		if err := writeSystemInfoFile(root, relPath, payload[relPath]); err != nil {
+		if err := writeSystemInfoFileMode(root, relPath, payload[relPath], fileMode); err != nil {
 			return err
 		}
 	}
@@ -218,11 +250,18 @@ func (r *systemInfoVolumeRefresher) write(ref resources.ActorRef, actorUID strin
 // writeSystemInfoFile writes one projected file inside root, skipping it if
 // the contents already match. Also re-validates relPath.
 func writeSystemInfoFile(root *os.Root, relPath string, data []byte) error {
+	return writeSystemInfoFileMode(root, relPath, data, 0o644)
+}
+
+func writeSystemInfoFileMode(root *os.Root, relPath string, data []byte, mode os.FileMode) error {
 	if err := volumepath.ValidateProjected(relPath); err != nil {
 		return fmt.Errorf("invalid system-info path %q: %w", relPath, err)
 	}
 	dst := filepath.FromSlash(relPath)
 	if existing, err := root.ReadFile(dst); err == nil && bytes.Equal(existing, data) {
+		if mode == 0o600 {
+			return root.Chmod(dst, mode)
+		}
 		return nil
 	}
 	if dir := filepath.Dir(dst); dir != "." {
@@ -230,7 +269,7 @@ func writeSystemInfoFile(root *os.Root, relPath string, data []byte) error {
 			return fmt.Errorf("while creating parent of %q under %q: %w", relPath, root.Name(), err)
 		}
 	}
-	if err := writeFileAtomicRoot(root, dst, data, 0o644); err != nil {
+	if err := writeFileAtomicRoot(root, dst, data, mode); err != nil {
 		return fmt.Errorf("while writing system-info file %q under %q: %w", relPath, root.Name(), err)
 	}
 	return nil
@@ -376,4 +415,38 @@ func (r *systemInfoVolumeRefresher) projecting(bundleName string) []*registeredA
 		}
 	}
 	return targets
+}
+
+func hasSupervisorProjection(spec *ateletpb.WorkloadSpec) bool {
+	for _, v := range spec.GetVolumes() {
+		for _, ds := range v.GetSystemInfo().GetDataSources() {
+			if ds.GetSupervisorBootstrap() != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Check before either Run or Restore can project a token into another worker.
+func validateSupervisorTarget(spec *ateletpb.WorkloadSpec, workerUID, atespace string) error {
+	for _, v := range spec.GetVolumes() {
+		for _, ds := range v.GetSystemInfo().GetDataSources() {
+			b := ds.GetSupervisorBootstrap()
+			if b == nil {
+				continue
+			}
+			if b.GetProfile() != supervisorbootstrap.Profile {
+				return fmt.Errorf("unsupported supervisor profile")
+			}
+			if atespace == resources.GoldenActorAtespace {
+				if b.GetActivationId() != "" || b.GetWorkerUid() != "" {
+					return fmt.Errorf("golden cannot carry supervisor activation")
+				}
+			} else if b.GetActivationId() == "" || b.GetWorkerUid() != workerUID {
+				return fmt.Errorf("supervisor target differs from assigned worker")
+			}
+		}
+	}
+	return nil
 }

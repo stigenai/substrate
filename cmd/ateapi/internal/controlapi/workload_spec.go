@@ -18,6 +18,7 @@ import (
 	"fmt"
 
 	"github.com/agent-substrate/substrate/internal/proto/ateletpb"
+	"github.com/agent-substrate/substrate/internal/resources"
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
@@ -80,6 +81,12 @@ func workloadSpecFromActorTemplate(actorTemplate *ateapipb.ActorTemplate, actor 
 							ActorMetadata: actorMetadata,
 						},
 					})
+				case dataSource.GetSupervisorBootstrap() != nil:
+					a := actor.GetStatus().GetSupervisorActivation()
+					if actor.GetMetadata().GetAtespace() != resources.GoldenActorAtespace && (a == nil || a.GetActivationId() == "") {
+						return nil, fmt.Errorf("protected activation missing")
+					}
+					ateletSystemInfo.DataSources = append(ateletSystemInfo.DataSources, &ateletpb.SystemInfoDataSource{DataSource: &ateletpb.SystemInfoDataSource_SupervisorBootstrap{SupervisorBootstrap: &ateletpb.SupervisorBootstrapDataSource{Profile: dataSource.GetSupervisorBootstrap().GetProfile(), ActivationId: a.GetActivationId(), WorkerUid: a.GetWorkerUid()}}})
 				case dataSource.GetTrustBundle() != nil:
 					// atelet resolves named trustBundles against its allowlist
 					// and ClusterTrustBundle informer at write time

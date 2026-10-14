@@ -389,6 +389,11 @@ func (s *AteomService) TerminateWorkload(ctx context.Context, req *ateompb.Termi
 	}
 	defer s.locks.Unlock(req.GetActorUid())
 
+	activation, err := s.stopSupervisorProcesses(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
 	attribution := ateomstats.ActorAttributionFromRequest(req)
 
 	if err := s.terminateWorkload(ctx, attribution, req.GetActorDirs()); err != nil {
@@ -397,7 +402,7 @@ func (s *AteomService) TerminateWorkload(ctx context.Context, req *ateompb.Termi
 
 	s.actorLogger.EmitLifecycleLog(ctx, "Actor terminated", attribution)
 
-	return &ateompb.TerminateWorkloadResponse{}, nil
+	return &ateompb.TerminateWorkloadResponse{SupervisorStop: supervisorStopped(req.GetActorUid(), activation)}, nil
 }
 
 // stopActorVM tears down the actor's micro-VM, if any, keeping it hosted.

@@ -31,6 +31,7 @@ import (
 	"github.com/agent-substrate/substrate/internal/ateomnet"
 	"github.com/agent-substrate/substrate/internal/ateomnet/netns"
 	"github.com/agent-substrate/substrate/internal/atunnel"
+	"github.com/agent-substrate/substrate/internal/proto/ateompb"
 	"github.com/agent-substrate/substrate/internal/resources"
 	"github.com/agent-substrate/substrate/internal/sizing"
 )
@@ -41,7 +42,9 @@ type hostedActor struct {
 	attribution resources.ActorAttribution
 
 	// Mutable fields are guarded by actorsMu.
-	network *ateomnet.SandboxSession
+	network        *ateomnet.SandboxSession
+	supervisorSpec *ateompb.WorkloadSpec
+	supervisorDirs *ateompb.ActorDirs
 	// Nil until boot publishes the VM.
 	vm *runningActor
 	// Nil when no guest stats connection is available.

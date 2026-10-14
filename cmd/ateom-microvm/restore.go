@@ -133,6 +133,7 @@ func (s *AteomService) RestoreWorkload(ctx context.Context, req *ateompb.Restore
 		templateAtespace: req.GetActorTemplateAtespace(),
 		templateName:     req.GetActorTemplateName(),
 		containers:       req.GetSpec().GetContainers(),
+		spec:             req.GetSpec(),
 		assetPaths:       req.GetRuntimeAssetPaths(),
 		egressGateway:    req.GetEgressGateway(),
 		size:             sizing.FromLimits(req.GetCpuMilli(), req.GetMemoryBytes()),
@@ -155,6 +156,7 @@ func (s *AteomService) RestoreWorkload(ctx context.Context, req *ateompb.Restore
 	if _, err := s.hostActor(ctx, attribution); err != nil {
 		return nil, err
 	}
+	s.bindSupervisor(p.actorUID, p.spec, p.actorDirs)
 	defer func() {
 		if retErr != nil {
 			// Detached: the RPC's context may be what failed it.

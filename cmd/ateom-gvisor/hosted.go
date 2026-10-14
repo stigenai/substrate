@@ -34,8 +34,11 @@ import (
 // hostedActor holds one actor's attribution, network, and runtime state.
 type hostedActor struct {
 	// Attribution is available during boot.
-	attribution resources.ActorAttribution
-	network     *ateomnet.SandboxSession
+	attribution         resources.ActorAttribution
+	network             *ateomnet.SandboxSession
+	supervisorSpec      *ateompb.WorkloadSpec
+	supervisorDirs      *ateompb.ActorDirs
+	supervisorRunscPath string
 	// resolvConf is the actor's resolver bind source, removed with its network.
 	resolvConf string
 	// Set once the containers exist.

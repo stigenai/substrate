@@ -102,6 +102,27 @@ kubectl ate get workers -l <label-selector>
 
 > **Note:** Actors, workers, and actor templates are not Kubernetes CRDs — they live in the Substrate control plane's PostgreSQL database, not `etcd`. `kubectl get actor`, `kubectl get worker`, and `kubectl get actortemplate` will not return anything; only `kubectl ate get …` queries the control plane (see [Actor Templates](#actor-templates)). `kubectl get workerpool` *does* work, because pools are CRDs.
 
+#### Protected supervisor observation
+
+```bash
+kubectl ate get supervisor-activation <actor-name> --atespace <atespace> -o json
+```
+
+This read-only command uses the same private Control connection and authentication
+as other resource reads. It requires JSON output and has a ten-second deadline.
+It reads the actor, its template, then the actor again; a changed actor or an
+inconsistent protected activation returns an error without JSON output.
+
+The `substrate.supervisor-observation/v1` document contains `atespace`,
+`actor_name`, `actor_uid`, the `ACTOR_STATE_*` state, `assignment` with
+`worker_uid` and `node_name`, and the seven public `activation` fields. Its
+`template` contains `atespace`, `name`, `uid`, the deterministic protobuf `digest`,
+and `resource_limits` with positive canonical Kubernetes `cpu` and `memory`
+quantities (for example, `500m` and `512Mi`). The digest excludes template metadata
+and status. No environment values, bootstrap token, or credentials are printed.
+The observation is not an execution permit; callers must require the expected
+running activation and their own current authority.
+
 #### `kubectl ate get actor` output columns
 
 | Column | Meaning |

@@ -649,6 +649,7 @@ func (s *AteomService) RunWorkload(ctx context.Context, req *ateompb.RunWorkload
 	if _, err := s.hostActor(ctx, attribution, req.GetActorDirs()); err != nil {
 		return nil, err
 	}
+	s.bindSupervisor(req.GetActorUid(), req.GetSpec(), req.GetActorDirs(), req.GetRunscPath())
 	rcmd := &runsc{
 		path:           req.GetRunscPath(),
 		actorUID:       req.GetActorUid(),
@@ -940,6 +941,7 @@ func (s *AteomService) RestoreWorkload(ctx context.Context, req *ateompb.Restore
 	if _, err := s.hostActor(ctx, attribution, req.GetActorDirs()); err != nil {
 		return nil, err
 	}
+	s.bindSupervisor(req.GetActorUid(), req.GetSpec(), req.GetActorDirs(), req.GetRunscPath())
 	rcmd := &runsc{
 		path:           req.GetRunscPath(),
 		actorUID:       req.GetActorUid(),
@@ -1108,6 +1110,11 @@ func (s *AteomService) TerminateWorkload(ctx context.Context, req *ateompb.Termi
 	}
 	defer s.locks.Unlock(req.GetActorUid())
 
+	activation, err := s.stopSupervisorProcesses(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
 	attribution := ateomstats.ActorAttributionFromRequest(req)
 
 	if err := s.terminateWorkload(ctx, attribution.Ref, attribution.UID, req.GetRunscPath(), req.GetActorDirs(), req.GetSpec().GetContainers()); err != nil {
@@ -1116,7 +1123,7 @@ func (s *AteomService) TerminateWorkload(ctx context.Context, req *ateompb.Termi
 
 	s.actorLogger.EmitLifecycleLog(ctx, "Actor terminated", attribution)
 
-	return &ateompb.TerminateWorkloadResponse{}, nil
+	return &ateompb.TerminateWorkloadResponse{SupervisorStop: supervisorStopped(req.GetActorUid(), activation)}, nil
 }
 
 func (s *AteomService) terminateWorkload(ctx context.Context, actorRef resources.ActorRef, actorUID, runscPath string, actorDirs *ateompb.ActorDirs, containers []*ateompb.Container) error {

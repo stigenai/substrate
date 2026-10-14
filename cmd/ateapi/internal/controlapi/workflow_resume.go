@@ -548,6 +548,8 @@ func (w *ActorWorkflow) assignWorkerAttempt(ctx context.Context, actorRef resour
 		toUpdate.Status.State = ateapipb.ActorState_ACTOR_STATE_RESUMING
 		toUpdate.Status.WorkerAssignment = newAssignment
 		toUpdate.Status.SupervisorActivation = activation
+		toUpdate.Status.SupervisorStop = nil
+		toUpdate.Status.SupervisorStopNode = ""
 		return nil
 	})
 	if err != nil {

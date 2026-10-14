@@ -53,6 +53,16 @@ func atespaceRule[T any](relation string, getRef func(T) *ateapipb.ObjectRef) ta
 // defaultRPCPermissions is the declarative registry mapping gRPC full method names
 // to their required permission rules.
 var defaultRPCPermissions = map[string]targetExtractor{
+	ateapipb.Control_GetSupervisorTermination_FullMethodName: func(req any) (string, string, error) {
+		r, ok := req.(*ateapipb.GetSupervisorTerminationRequest)
+		if !ok {
+			return "", "", status.Error(codes.Internal, "authz: unexpected termination request")
+		}
+		if r.GetActor().GetAtespace() == "" {
+			return "", "", nil
+		}
+		return RelationCanGet, AtespaceObject(r.GetActor().GetAtespace()), nil
+	},
 	ateapipb.Control_CreateAtespace_FullMethodName: globalRule[*ateapipb.CreateAtespaceRequest](RelationCanCreateAtespace),
 	ateapipb.Control_ListAtespaces_FullMethodName:  globalRule[*ateapipb.ListAtespacesRequest](RelationCanListAtespaces),
 	ateapipb.Control_GetAtespace_FullMethodName:    atespaceRule(RelationCanGet, (*ateapipb.GetAtespaceRequest).GetAtespace),

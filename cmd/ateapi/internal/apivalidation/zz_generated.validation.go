@@ -757,6 +757,64 @@ func Validate_ActorStatus(
 		errs = append(errs, fn(fldPath.Child("supervisor_activation"), obj.SupervisorActivation, oldVal, oldObj != nil)...)
 	}
 
+	{ // field ateapipb.ActorStatus.SupervisorStop
+		fn := func(
+			fldPath *field.Path,
+			obj, oldObj *ateapipb.SupervisorTerminationAck,
+			oldValueCorrelated bool) (errs field.ErrorList) {
+			// don't revalidate unchanged data
+			if oldValueCorrelated && op.Type == operation.Update {
+				if ateDeepEqual(obj, oldObj) {
+					return nil
+				}
+			}
+			// call field-attached validations
+			earlyReturn := false
+			if e := validate.OptionalPointer(ctx, op, fldPath, obj, oldObj).MarkShortCircuit(); len(e) != 0 {
+				earlyReturn = true
+			}
+			if earlyReturn {
+				return // do not proceed
+			}
+			// call the type's validation function
+			errs = append(errs, Validate_SupervisorTerminationAck(ctx, op, fldPath, obj, oldObj)...)
+			return
+		}
+		oldVal := safe.Field(oldObj,
+			func(oldObj *ateapipb.ActorStatus) *ateapipb.SupervisorTerminationAck {
+				return oldObj.SupervisorStop
+			})
+		errs = append(errs, fn(fldPath.Child("supervisor_stop"), obj.SupervisorStop, oldVal, oldObj != nil)...)
+	}
+
+	{ // field ateapipb.ActorStatus.SupervisorStopNode
+		fn := func(
+			fldPath *field.Path,
+			obj, oldObj *string,
+			oldValueCorrelated bool) (errs field.ErrorList) {
+			// don't revalidate unchanged data
+			if oldValueCorrelated && op.Type == operation.Update {
+				if obj == oldObj || (obj != nil && oldObj != nil && *obj == *oldObj) {
+					return nil
+				}
+			}
+			// call field-attached validations
+			earlyReturn := false
+			if e := validate.OptionalValue(ctx, op, fldPath, obj, oldObj).MarkShortCircuit(); len(e) != 0 {
+				earlyReturn = true
+			}
+			if earlyReturn {
+				return // do not proceed
+			}
+			return
+		}
+		oldVal := safe.Field(oldObj,
+			func(oldObj *ateapipb.ActorStatus) *string {
+				return &oldObj.SupervisorStopNode
+			})
+		errs = append(errs, fn(fldPath.Child("supervisor_stop_node"), &obj.SupervisorStopNode, oldVal, oldObj != nil)...)
+	}
+
 	return errs
 }
 
@@ -3667,6 +3725,48 @@ func Validate_GetAtespaceRequest(
 		errs = append(errs, fn(fldPath.Child("atespace"), obj.Atespace, oldVal, oldObj != nil)...)
 	}
 
+	return errs
+}
+
+// Validate_GetSupervisorTerminationRequest validates an instance of GetSupervisorTerminationRequest according
+// to declarative validation rules in the API schema.
+func Validate_GetSupervisorTerminationRequest(
+	ctx context.Context, op operation.Operation, fldPath *field.Path,
+	obj, oldObj *ateapipb.GetSupervisorTerminationRequest) (errs field.ErrorList) {
+
+	{ // field ateapipb.GetSupervisorTerminationRequest.Actor
+		fn := func(
+			fldPath *field.Path,
+			obj, oldObj *ateapipb.ObjectRef,
+			oldValueCorrelated bool) (errs field.ErrorList) {
+			// don't revalidate unchanged data
+			if oldValueCorrelated && op.Type == operation.Update {
+				if ateDeepEqual(obj, oldObj) {
+					return nil
+				}
+			}
+			// call field-attached validations
+			earlyReturn := false
+			if e := validate.RequiredPointer(ctx, op, fldPath, obj, oldObj).MarkShortCircuit(); len(e) != 0 {
+				errs = append(errs, e...)
+				earlyReturn = true
+			}
+			if earlyReturn {
+				return // do not proceed
+			}
+			// call the type's validation function
+			errs = append(errs, Validate_ObjectRef(ctx, op, fldPath, obj, oldObj)...)
+			return
+		}
+		oldVal := safe.Field(oldObj,
+			func(oldObj *ateapipb.GetSupervisorTerminationRequest) *ateapipb.ObjectRef {
+				return oldObj.Actor
+			})
+		errs = append(errs, fn(fldPath.Child("actor"), obj.Actor, oldVal, oldObj != nil)...)
+	}
+
+	// field ateapipb.GetSupervisorTerminationRequest.ActorUid has no validation
+	// field ateapipb.GetSupervisorTerminationRequest.ActivationId has no validation
 	return errs
 }
 
@@ -7056,6 +7156,52 @@ func Validate_SupervisorBootstrapDataSource(
 		errs = append(errs, fn(fldPath.Child("profile"), &obj.Profile, oldVal, oldObj != nil)...)
 	}
 
+	return errs
+}
+
+// Validate_SupervisorTerminationAck validates an instance of SupervisorTerminationAck according
+// to declarative validation rules in the API schema.
+func Validate_SupervisorTerminationAck(
+	ctx context.Context, op operation.Operation, fldPath *field.Path,
+	obj, oldObj *ateapipb.SupervisorTerminationAck) (errs field.ErrorList) {
+
+	// field ateapipb.SupervisorTerminationAck.SchemaVersion has no validation
+	// field ateapipb.SupervisorTerminationAck.ActorUid has no validation
+
+	{ // field ateapipb.SupervisorTerminationAck.Activation
+		fn := func(
+			fldPath *field.Path,
+			obj, oldObj *ateapipb.SupervisorActivation,
+			oldValueCorrelated bool) (errs field.ErrorList) {
+			// don't revalidate unchanged data
+			if oldValueCorrelated && op.Type == operation.Update {
+				if ateDeepEqual(obj, oldObj) {
+					return nil
+				}
+			}
+			// call field-attached validations
+			earlyReturn := false
+			if e := validate.RequiredPointer(ctx, op, fldPath, obj, oldObj).MarkShortCircuit(); len(e) != 0 {
+				errs = append(errs, e...)
+				earlyReturn = true
+			}
+			if earlyReturn {
+				return // do not proceed
+			}
+			// call the type's validation function
+			errs = append(errs, Validate_SupervisorActivation(ctx, op, fldPath, obj, oldObj)...)
+			return
+		}
+		oldVal := safe.Field(oldObj,
+			func(oldObj *ateapipb.SupervisorTerminationAck) *ateapipb.SupervisorActivation {
+				return oldObj.Activation
+			})
+		errs = append(errs, fn(fldPath.Child("activation"), obj.Activation, oldVal, oldObj != nil)...)
+	}
+
+	// field ateapipb.SupervisorTerminationAck.AcknowledgementId has no validation
+	// field ateapipb.SupervisorTerminationAck.TerminatedAt has no validation
+	// field ateapipb.SupervisorTerminationAck.Runtime has no validation
 	return errs
 }
 

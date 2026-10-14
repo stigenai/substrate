@@ -25,9 +25,12 @@ import (
 	"github.com/agent-substrate/substrate/internal/objectstore"
 	"github.com/agent-substrate/substrate/internal/proto/ateletpb"
 	"github.com/agent-substrate/substrate/internal/resources"
+	"github.com/agent-substrate/substrate/internal/supervisorbootstrap"
+	"github.com/agent-substrate/substrate/internal/supervisortermination"
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 // DeleteActor executes the workflow to delete an actor. Idempotent.
@@ -50,10 +53,6 @@ func (w *ActorWorkflow) DeleteActor(ctx context.Context, actorRef resources.Acto
 		return nil, status.Error(codes.Aborted, "concurrent update conflict, please retry")
 	}
 
-	if actor, err = w.ensureMarkedDeleting(ctx, actorRef, actor, anyState); err != nil {
-		return nil, err
-	}
-
 	// DeleteActor will attempt best-effort cleanup across all steps, collecting any errors.
 	// If any step fails, errors are returned so the caller can retry, and the actor record
 	// is retained in the store in the DELETING state.
@@ -68,9 +67,16 @@ func (w *ActorWorkflow) DeleteActor(ctx context.Context, actorRef resources.Acto
 	if err != nil {
 		errs = append(errs, fmt.Errorf("while fetching actor template: %w", err))
 	}
+	profile, profileErr := supervisorbootstrap.Describe(actorTemplate)
+	if precondition.UID == "" && (actor.GetStatus().GetSupervisorActivation() != nil || profile != nil || profileErr != nil) {
+		return nil, status.Error(codes.FailedPrecondition, "protected actor deletion requires exact UID")
+	}
+	if actor, err = w.ensureMarkedDeleting(ctx, actorRef, actor, anyState); err != nil {
+		return nil, err
+	}
 
 	var atletTerminatedErr, volumesDetachedErr error
-	if err := w.ensureAteletTerminated(ctx, actorRef, actor, actorTemplate); err != nil {
+	if actor, err = w.retainAteletTermination(ctx, actorRef, actor, actorTemplate); err != nil {
 		atletTerminatedErr = fmt.Errorf("while terminating atelet: %w", err)
 		errs = append(errs, atletTerminatedErr)
 	}
@@ -121,14 +127,51 @@ func (w *ActorWorkflow) loadActorForDelete(ctx context.Context, actorRef resourc
 }
 
 // ensureAteletTerminated calls atelet to terminate the workload.
-func (w *ActorWorkflow) ensureAteletTerminated(ctx context.Context, actorRef resources.ActorRef, actor *ateapipb.Actor, actorTemplate *ateapipb.ActorTemplate) (err error) {
+// A revert may terminate without deleting, so only DeleteActor retains a receipt.
+func (w *ActorWorkflow) ensureAteletTerminated(ctx context.Context, ref resources.ActorRef, actor *ateapipb.Actor, template *ateapipb.ActorTemplate) error {
+	_, err := w.terminateAtelet(ctx, ref, actor, template)
+	return err
+}
+
+func (w *ActorWorkflow) retainAteletTermination(ctx context.Context, ref resources.ActorRef, actor *ateapipb.Actor, template *ateapipb.ActorTemplate) (*ateapipb.Actor, error) {
+	if stop := actor.GetStatus().GetSupervisorStop(); stop != nil {
+		if err := supervisortermination.ValidateAck(actor.GetMetadata().GetUid(), actor.GetStatus().GetSupervisorActivation(), stop); err != nil {
+			return actor, err
+		}
+		node := actor.GetStatus().GetSupervisorStopNode()
+		assignment := actor.GetStatus().GetWorkerAssignment()
+		if node == "" || (assignment != nil && (assignment.GetNodeName() != node || assignment.GetWorkerPodUid() != stop.GetActivation().GetWorkerUid())) {
+			return actor, fmt.Errorf("retained stop assignment differs")
+		}
+		return actor, nil
+	}
+	stop, err := w.terminateAtelet(ctx, ref, actor, template)
+	if err != nil || stop == nil {
+		return actor, err
+	}
+	assignment := actor.GetStatus().GetWorkerAssignment()
+	if assignment.GetNodeName() == "" || assignment.GetWorkerPodUid() != stop.GetActivation().GetWorkerUid() {
+		return actor, fmt.Errorf("stop worker assignment differs")
+	}
+	updated, err := w.store.UpdateActor(ctx, ref, store.PreconditionFrom(actor), func(toUpdate *ateapipb.Actor) error {
+		toUpdate.Status.SupervisorStop = proto.CloneOf(stop)
+		toUpdate.Status.SupervisorStopNode = assignment.GetNodeName()
+		return nil
+	})
+	if err != nil {
+		return actor, err
+	}
+	return updated, nil
+}
+
+func (w *ActorWorkflow) terminateAtelet(ctx context.Context, actorRef resources.ActorRef, actor *ateapipb.Actor, actorTemplate *ateapipb.ActorTemplate) (_ *ateapipb.SupervisorTerminationAck, err error) {
 	ctx, done := stepSpan(ctx, "CallAteletTerminate")
 	defer func() { err = done(err) }()
 
 	assignment := actor.GetStatus().GetWorkerAssignment()
 	if assignment == nil {
 		slog.InfoContext(ctx, "actor has no worker assignment, skipping atlet terminate request", slog.Any("actor", actorRef))
-		return nil
+		return nil, nil
 	}
 
 	if workerName := assignment.GetWorker().GetName(); workerName != "" {
@@ -137,19 +180,19 @@ func (w *ActorWorkflow) ensureAteletTerminated(ctx context.Context, actorRef res
 		// ordinary case, and the others are none of this delete's business.
 		hosted, err := workerHostsActor(ctx, w.store, workerName, actor.GetMetadata().GetUid())
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if !hosted {
 			slog.InfoContext(ctx, "worker is no longer assigned to this actor, skipping atelet terminate request",
 				slog.String("worker", workerName),
 				slog.Any("actor", actorRef))
-			return nil
+			return nil, nil
 		}
 	}
 
 	conn, err := w.dialer.DialForAteletOnNode(assignment.GetNodeName())
 	if err != nil {
-		return fmt.Errorf("while connecting to atelet on node %q: %w", assignment.GetNodeName(), err)
+		return nil, fmt.Errorf("while connecting to atelet on node %q: %w", assignment.GetNodeName(), err)
 	}
 
 	client := ateletpb.NewAteomHerderClient(conn)
@@ -158,7 +201,7 @@ func (w *ActorWorkflow) ensureAteletTerminated(ctx context.Context, actorRef res
 	if actorTemplate != nil {
 		spec, err := workloadSpecFromActorTemplate(actorTemplate, actor)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		workloadSpec = spec
 	} else {
@@ -168,7 +211,7 @@ func (w *ActorWorkflow) ensureAteletTerminated(ctx context.Context, actorRef res
 			slog.String("actor", actorRef.Name),
 			slog.String("templateAtespace", actor.GetActorTemplate().GetAtespace()),
 			slog.String("templateName", actor.GetActorTemplate().GetName()))
-		workloadSpec = &ateletpb.WorkloadSpec{}
+		workloadSpec = &ateletpb.WorkloadSpec{SupervisorActivation: proto.CloneOf(actor.GetStatus().GetSupervisorActivation())}
 		for _, vol := range actor.GetStatus().GetActorVolumes() {
 			// StorageVolumeId is only populated once the volume is provisioned.
 			// Skip volumes that were never created (e.g. failed during PENDING state).
@@ -197,15 +240,21 @@ func (w *ActorWorkflow) ensureAteletTerminated(ctx context.Context, actorRef res
 		Spec:                  workloadSpec,
 	}
 
-	if _, err := client.Terminate(ctx, req); err != nil {
+	response, err := client.Terminate(ctx, req)
+	if err != nil {
 		if status.Code(err) == codes.NotFound {
 			slog.InfoContext(ctx, "workload already terminated on atelet", slog.Any("actor", actorRef))
-			return nil
+			return nil, nil
 		}
-		return fmt.Errorf("while terminating actor on atelet: %w", err)
+		return nil, fmt.Errorf("while terminating actor on atelet: %w", err)
 	}
 
-	return nil
+	if response.GetSupervisorStop() != nil {
+		if err := supervisortermination.ValidateAck(actor.GetMetadata().GetUid(), actor.GetStatus().GetSupervisorActivation(), response.GetSupervisorStop()); err != nil {
+			return nil, err
+		}
+	}
+	return proto.CloneOf(response.GetSupervisorStop()), nil
 }
 
 // ensureVolumesDetachedForDelete detaches external volumes.

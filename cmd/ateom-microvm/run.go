@@ -255,6 +255,7 @@ func (s *AteomService) RunWorkload(ctx context.Context, req *ateompb.RunWorkload
 		templateAtespace: req.GetActorTemplateAtespace(),
 		templateName:     req.GetActorTemplateName(),
 		containers:       req.GetSpec().GetContainers(),
+		spec:             req.GetSpec(),
 		assetPaths:       req.GetRuntimeAssetPaths(),
 		egressGateway:    req.GetEgressGateway(),
 		size:             sizing.FromLimits(req.GetCpuMilli(), req.GetMemoryBytes()),
@@ -274,6 +275,7 @@ func (s *AteomService) RunWorkload(ctx context.Context, req *ateompb.RunWorkload
 	if _, err := s.hostActor(ctx, attribution); err != nil {
 		return nil, err
 	}
+	s.bindSupervisor(p.actorUID, p.spec, p.actorDirs)
 	defer func() {
 		if retErr != nil {
 			// Detached: the RPC's context may be what failed it.
@@ -301,6 +303,7 @@ type actorBootParams struct {
 	templateAtespace string
 	templateName     string
 	containers       []*ateompb.Container
+	spec             *ateompb.WorkloadSpec
 	assetPaths       map[string]string
 	// egressGateway is nil unless actor TCP should be redirected through atunnel.
 	egressGateway *ateompb.EgressGateway
@@ -361,6 +364,7 @@ func (s *AteomService) coldBootActorRetrying(ctx context.Context, p actorBootPar
 		if _, err := s.hostActor(ctx, p.attribution()); err != nil {
 			return err
 		}
+		s.bindSupervisor(p.actorUID, p.spec, p.actorDirs)
 	}
 }
 

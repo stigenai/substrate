@@ -21,6 +21,7 @@
 package ateompb
 
 import (
+	ateapipb "github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -416,9 +417,10 @@ func (x *TerminateWorkloadRequest) GetActorDirs() *ActorDirs {
 }
 
 type TerminateWorkloadResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState             `protogen:"open.v1"`
+	SupervisorStop *ateapipb.SupervisorTerminationAck `protobuf:"bytes,1,opt,name=supervisor_stop,json=supervisorStop,proto3" json:"supervisor_stop,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *TerminateWorkloadResponse) Reset() {
@@ -449,6 +451,13 @@ func (x *TerminateWorkloadResponse) ProtoReflect() protoreflect.Message {
 // Deprecated: Use TerminateWorkloadResponse.ProtoReflect.Descriptor instead.
 func (*TerminateWorkloadResponse) Descriptor() ([]byte, []int) {
 	return file_ateom_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *TerminateWorkloadResponse) GetSupervisorStop() *ateapipb.SupervisorTerminationAck {
+	if x != nil {
+		return x.SupervisorStop
+	}
+	return nil
 }
 
 type RunWorkloadRequest struct {
@@ -641,10 +650,12 @@ func (x *EgressGateway) GetAddress() string {
 
 // WorkloadSpec parallels Pod, but with far fewer configurable fields.
 type WorkloadSpec struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Containers    []*Container           `protobuf:"bytes,1,rep,name=containers,proto3" json:"containers,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Containers []*Container           `protobuf:"bytes,1,rep,name=containers,proto3" json:"containers,omitempty"`
+	// Retain this activation with the live workload before Run/Restore starts it.
+	SupervisorActivation *ateapipb.SupervisorActivation `protobuf:"bytes,2,opt,name=supervisor_activation,json=supervisorActivation,proto3" json:"supervisor_activation,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *WorkloadSpec) Reset() {
@@ -680,6 +691,13 @@ func (*WorkloadSpec) Descriptor() ([]byte, []int) {
 func (x *WorkloadSpec) GetContainers() []*Container {
 	if x != nil {
 		return x.Containers
+	}
+	return nil
+}
+
+func (x *WorkloadSpec) GetSupervisorActivation() *ateapipb.SupervisorActivation {
+	if x != nil {
+		return x.SupervisorActivation
 	}
 	return nil
 }
@@ -1891,7 +1909,7 @@ var File_ateom_proto protoreflect.FileDescriptor
 
 const file_ateom_proto_rawDesc = "" +
 	"\n" +
-	"\vateom.proto\x12\x05ateom\"\xb7\x02\n" +
+	"\vateom.proto\x12\x05ateom\x1a\x1fpkg/proto/ateapipb/ateapi.proto\"\xb7\x02\n" +
 	"\tActorDirs\x12\x19\n" +
 	"\broot_dir\x18\x01 \x01(\tR\arootDir\x12$\n" +
 	"\x0eoci_bundle_dir\x18\x02 \x01(\tR\fociBundleDir\x12%\n" +
@@ -1913,8 +1931,9 @@ const file_ateom_proto_rawDesc = "" +
 	"runsc_path\x18\x06 \x01(\tR\trunscPath\x12'\n" +
 	"\x04spec\x18\a \x01(\v2\x13.ateom.WorkloadSpecR\x04spec\x12/\n" +
 	"\n" +
-	"actor_dirs\x18\b \x01(\v2\x10.ateom.ActorDirsR\tactorDirs\"\x1b\n" +
-	"\x19TerminateWorkloadResponse\"\x8a\x05\n" +
+	"actor_dirs\x18\b \x01(\v2\x10.ateom.ActorDirsR\tactorDirs\"f\n" +
+	"\x19TerminateWorkloadResponse\x12I\n" +
+	"\x0fsupervisor_stop\x18\x01 \x01(\v2 .ateapi.SupervisorTerminationAckR\x0esupervisorStop\"\x8a\x05\n" +
 	"\x12RunWorkloadRequest\x12\x1a\n" +
 	"\batespace\x18\x01 \x01(\tR\batespace\x12\x1d\n" +
 	"\n" +
@@ -1937,11 +1956,12 @@ const file_ateom_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x11\n" +
 	"\x0f_egress_gateway\")\n" +
 	"\rEgressGateway\x12\x18\n" +
-	"\aaddress\x18\x01 \x01(\tR\aaddress\"@\n" +
+	"\aaddress\x18\x01 \x01(\tR\aaddress\"\x93\x01\n" +
 	"\fWorkloadSpec\x120\n" +
 	"\n" +
 	"containers\x18\x01 \x03(\v2\x10.ateom.ContainerR\n" +
-	"containers\"\x91\x03\n" +
+	"containers\x12Q\n" +
+	"\x15supervisor_activation\x18\x02 \x01(\v2\x1c.ateapi.SupervisorActivationR\x14supervisorActivation\"\x91\x03\n" +
 	"\tContainer\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x125\n" +
 	"\fwakeup_probe\x18\x02 \x01(\v2\x12.ateom.WakeupProbeR\vwakeupProbe\x12W\n" +
@@ -2081,80 +2101,84 @@ func file_ateom_proto_rawDescGZIP() []byte {
 var file_ateom_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
 var file_ateom_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
 var file_ateom_proto_goTypes = []any{
-	(SnapshotScope)(0),                     // 0: ateom.SnapshotScope
-	(SandboxClass)(0),                      // 1: ateom.SandboxClass
-	(StatsSource)(0),                       // 2: ateom.StatsSource
-	(*ActorDirs)(nil),                      // 3: ateom.ActorDirs
-	(*TerminateWorkloadRequest)(nil),       // 4: ateom.TerminateWorkloadRequest
-	(*TerminateWorkloadResponse)(nil),      // 5: ateom.TerminateWorkloadResponse
-	(*RunWorkloadRequest)(nil),             // 6: ateom.RunWorkloadRequest
-	(*EgressGateway)(nil),                  // 7: ateom.EgressGateway
-	(*WorkloadSpec)(nil),                   // 8: ateom.WorkloadSpec
-	(*Container)(nil),                      // 9: ateom.Container
-	(*VolumeMount)(nil),                    // 10: ateom.VolumeMount
-	(*DurableDirVolumeMount)(nil),          // 11: ateom.DurableDirVolumeMount
-	(*SystemInfoVolumeMount)(nil),          // 12: ateom.SystemInfoVolumeMount
-	(*ImageVolumeMount)(nil),               // 13: ateom.ImageVolumeMount
-	(*WakeupProbe)(nil),                    // 14: ateom.WakeupProbe
-	(*HTTPGetAction)(nil),                  // 15: ateom.HTTPGetAction
-	(*RunWorkloadResponse)(nil),            // 16: ateom.RunWorkloadResponse
-	(*CheckpointWorkloadRequest)(nil),      // 17: ateom.CheckpointWorkloadRequest
-	(*CheckpointWorkloadResponse)(nil),     // 18: ateom.CheckpointWorkloadResponse
-	(*RestoreWorkloadRequest)(nil),         // 19: ateom.RestoreWorkloadRequest
-	(*RestoreWorkloadResponse)(nil),        // 20: ateom.RestoreWorkloadResponse
-	(*GetWorkloadStatsRequest)(nil),        // 21: ateom.GetWorkloadStatsRequest
-	(*WorkloadStatsSample)(nil),            // 22: ateom.WorkloadStatsSample
-	(*GetWorkloadStatsResponse)(nil),       // 23: ateom.GetWorkloadStatsResponse
-	(*GetActiveWorkloadStatsRequest)(nil),  // 24: ateom.GetActiveWorkloadStatsRequest
-	(*GetActiveWorkloadStatsResponse)(nil), // 25: ateom.GetActiveWorkloadStatsResponse
-	nil,                                    // 26: ateom.RunWorkloadRequest.RuntimeAssetPathsEntry
-	nil,                                    // 27: ateom.CheckpointWorkloadRequest.RuntimeAssetPathsEntry
-	nil,                                    // 28: ateom.RestoreWorkloadRequest.RuntimeAssetPathsEntry
+	(SnapshotScope)(0),                        // 0: ateom.SnapshotScope
+	(SandboxClass)(0),                         // 1: ateom.SandboxClass
+	(StatsSource)(0),                          // 2: ateom.StatsSource
+	(*ActorDirs)(nil),                         // 3: ateom.ActorDirs
+	(*TerminateWorkloadRequest)(nil),          // 4: ateom.TerminateWorkloadRequest
+	(*TerminateWorkloadResponse)(nil),         // 5: ateom.TerminateWorkloadResponse
+	(*RunWorkloadRequest)(nil),                // 6: ateom.RunWorkloadRequest
+	(*EgressGateway)(nil),                     // 7: ateom.EgressGateway
+	(*WorkloadSpec)(nil),                      // 8: ateom.WorkloadSpec
+	(*Container)(nil),                         // 9: ateom.Container
+	(*VolumeMount)(nil),                       // 10: ateom.VolumeMount
+	(*DurableDirVolumeMount)(nil),             // 11: ateom.DurableDirVolumeMount
+	(*SystemInfoVolumeMount)(nil),             // 12: ateom.SystemInfoVolumeMount
+	(*ImageVolumeMount)(nil),                  // 13: ateom.ImageVolumeMount
+	(*WakeupProbe)(nil),                       // 14: ateom.WakeupProbe
+	(*HTTPGetAction)(nil),                     // 15: ateom.HTTPGetAction
+	(*RunWorkloadResponse)(nil),               // 16: ateom.RunWorkloadResponse
+	(*CheckpointWorkloadRequest)(nil),         // 17: ateom.CheckpointWorkloadRequest
+	(*CheckpointWorkloadResponse)(nil),        // 18: ateom.CheckpointWorkloadResponse
+	(*RestoreWorkloadRequest)(nil),            // 19: ateom.RestoreWorkloadRequest
+	(*RestoreWorkloadResponse)(nil),           // 20: ateom.RestoreWorkloadResponse
+	(*GetWorkloadStatsRequest)(nil),           // 21: ateom.GetWorkloadStatsRequest
+	(*WorkloadStatsSample)(nil),               // 22: ateom.WorkloadStatsSample
+	(*GetWorkloadStatsResponse)(nil),          // 23: ateom.GetWorkloadStatsResponse
+	(*GetActiveWorkloadStatsRequest)(nil),     // 24: ateom.GetActiveWorkloadStatsRequest
+	(*GetActiveWorkloadStatsResponse)(nil),    // 25: ateom.GetActiveWorkloadStatsResponse
+	nil,                                       // 26: ateom.RunWorkloadRequest.RuntimeAssetPathsEntry
+	nil,                                       // 27: ateom.CheckpointWorkloadRequest.RuntimeAssetPathsEntry
+	nil,                                       // 28: ateom.RestoreWorkloadRequest.RuntimeAssetPathsEntry
+	(*ateapipb.SupervisorTerminationAck)(nil), // 29: ateapi.SupervisorTerminationAck
+	(*ateapipb.SupervisorActivation)(nil),     // 30: ateapi.SupervisorActivation
 }
 var file_ateom_proto_depIdxs = []int32{
 	8,  // 0: ateom.TerminateWorkloadRequest.spec:type_name -> ateom.WorkloadSpec
 	3,  // 1: ateom.TerminateWorkloadRequest.actor_dirs:type_name -> ateom.ActorDirs
-	8,  // 2: ateom.RunWorkloadRequest.spec:type_name -> ateom.WorkloadSpec
-	26, // 3: ateom.RunWorkloadRequest.runtime_asset_paths:type_name -> ateom.RunWorkloadRequest.RuntimeAssetPathsEntry
-	7,  // 4: ateom.RunWorkloadRequest.egress_gateway:type_name -> ateom.EgressGateway
-	3,  // 5: ateom.RunWorkloadRequest.actor_dirs:type_name -> ateom.ActorDirs
-	9,  // 6: ateom.WorkloadSpec.containers:type_name -> ateom.Container
-	14, // 7: ateom.Container.wakeup_probe:type_name -> ateom.WakeupProbe
-	11, // 8: ateom.Container.durable_dir_volume_mounts:type_name -> ateom.DurableDirVolumeMount
-	10, // 9: ateom.Container.csi_volume_mounts:type_name -> ateom.VolumeMount
-	12, // 10: ateom.Container.system_info_volume_mounts:type_name -> ateom.SystemInfoVolumeMount
-	13, // 11: ateom.Container.image_volume_mounts:type_name -> ateom.ImageVolumeMount
-	15, // 12: ateom.WakeupProbe.http_get:type_name -> ateom.HTTPGetAction
-	8,  // 13: ateom.CheckpointWorkloadRequest.spec:type_name -> ateom.WorkloadSpec
-	27, // 14: ateom.CheckpointWorkloadRequest.runtime_asset_paths:type_name -> ateom.CheckpointWorkloadRequest.RuntimeAssetPathsEntry
-	0,  // 15: ateom.CheckpointWorkloadRequest.scope:type_name -> ateom.SnapshotScope
-	3,  // 16: ateom.CheckpointWorkloadRequest.actor_dirs:type_name -> ateom.ActorDirs
-	8,  // 17: ateom.RestoreWorkloadRequest.spec:type_name -> ateom.WorkloadSpec
-	28, // 18: ateom.RestoreWorkloadRequest.runtime_asset_paths:type_name -> ateom.RestoreWorkloadRequest.RuntimeAssetPathsEntry
-	0,  // 19: ateom.RestoreWorkloadRequest.scope:type_name -> ateom.SnapshotScope
-	7,  // 20: ateom.RestoreWorkloadRequest.egress_gateway:type_name -> ateom.EgressGateway
-	3,  // 21: ateom.RestoreWorkloadRequest.actor_dirs:type_name -> ateom.ActorDirs
-	1,  // 22: ateom.WorkloadStatsSample.sandbox_class:type_name -> ateom.SandboxClass
-	2,  // 23: ateom.WorkloadStatsSample.source:type_name -> ateom.StatsSource
-	22, // 24: ateom.GetWorkloadStatsResponse.sample:type_name -> ateom.WorkloadStatsSample
-	22, // 25: ateom.GetActiveWorkloadStatsResponse.samples:type_name -> ateom.WorkloadStatsSample
-	6,  // 26: ateom.Ateom.RunWorkload:input_type -> ateom.RunWorkloadRequest
-	17, // 27: ateom.Ateom.CheckpointWorkload:input_type -> ateom.CheckpointWorkloadRequest
-	19, // 28: ateom.Ateom.RestoreWorkload:input_type -> ateom.RestoreWorkloadRequest
-	21, // 29: ateom.Ateom.GetWorkloadStats:input_type -> ateom.GetWorkloadStatsRequest
-	24, // 30: ateom.Ateom.GetActiveWorkloadStats:input_type -> ateom.GetActiveWorkloadStatsRequest
-	4,  // 31: ateom.Ateom.TerminateWorkload:input_type -> ateom.TerminateWorkloadRequest
-	16, // 32: ateom.Ateom.RunWorkload:output_type -> ateom.RunWorkloadResponse
-	18, // 33: ateom.Ateom.CheckpointWorkload:output_type -> ateom.CheckpointWorkloadResponse
-	20, // 34: ateom.Ateom.RestoreWorkload:output_type -> ateom.RestoreWorkloadResponse
-	23, // 35: ateom.Ateom.GetWorkloadStats:output_type -> ateom.GetWorkloadStatsResponse
-	25, // 36: ateom.Ateom.GetActiveWorkloadStats:output_type -> ateom.GetActiveWorkloadStatsResponse
-	5,  // 37: ateom.Ateom.TerminateWorkload:output_type -> ateom.TerminateWorkloadResponse
-	32, // [32:38] is the sub-list for method output_type
-	26, // [26:32] is the sub-list for method input_type
-	26, // [26:26] is the sub-list for extension type_name
-	26, // [26:26] is the sub-list for extension extendee
-	0,  // [0:26] is the sub-list for field type_name
+	29, // 2: ateom.TerminateWorkloadResponse.supervisor_stop:type_name -> ateapi.SupervisorTerminationAck
+	8,  // 3: ateom.RunWorkloadRequest.spec:type_name -> ateom.WorkloadSpec
+	26, // 4: ateom.RunWorkloadRequest.runtime_asset_paths:type_name -> ateom.RunWorkloadRequest.RuntimeAssetPathsEntry
+	7,  // 5: ateom.RunWorkloadRequest.egress_gateway:type_name -> ateom.EgressGateway
+	3,  // 6: ateom.RunWorkloadRequest.actor_dirs:type_name -> ateom.ActorDirs
+	9,  // 7: ateom.WorkloadSpec.containers:type_name -> ateom.Container
+	30, // 8: ateom.WorkloadSpec.supervisor_activation:type_name -> ateapi.SupervisorActivation
+	14, // 9: ateom.Container.wakeup_probe:type_name -> ateom.WakeupProbe
+	11, // 10: ateom.Container.durable_dir_volume_mounts:type_name -> ateom.DurableDirVolumeMount
+	10, // 11: ateom.Container.csi_volume_mounts:type_name -> ateom.VolumeMount
+	12, // 12: ateom.Container.system_info_volume_mounts:type_name -> ateom.SystemInfoVolumeMount
+	13, // 13: ateom.Container.image_volume_mounts:type_name -> ateom.ImageVolumeMount
+	15, // 14: ateom.WakeupProbe.http_get:type_name -> ateom.HTTPGetAction
+	8,  // 15: ateom.CheckpointWorkloadRequest.spec:type_name -> ateom.WorkloadSpec
+	27, // 16: ateom.CheckpointWorkloadRequest.runtime_asset_paths:type_name -> ateom.CheckpointWorkloadRequest.RuntimeAssetPathsEntry
+	0,  // 17: ateom.CheckpointWorkloadRequest.scope:type_name -> ateom.SnapshotScope
+	3,  // 18: ateom.CheckpointWorkloadRequest.actor_dirs:type_name -> ateom.ActorDirs
+	8,  // 19: ateom.RestoreWorkloadRequest.spec:type_name -> ateom.WorkloadSpec
+	28, // 20: ateom.RestoreWorkloadRequest.runtime_asset_paths:type_name -> ateom.RestoreWorkloadRequest.RuntimeAssetPathsEntry
+	0,  // 21: ateom.RestoreWorkloadRequest.scope:type_name -> ateom.SnapshotScope
+	7,  // 22: ateom.RestoreWorkloadRequest.egress_gateway:type_name -> ateom.EgressGateway
+	3,  // 23: ateom.RestoreWorkloadRequest.actor_dirs:type_name -> ateom.ActorDirs
+	1,  // 24: ateom.WorkloadStatsSample.sandbox_class:type_name -> ateom.SandboxClass
+	2,  // 25: ateom.WorkloadStatsSample.source:type_name -> ateom.StatsSource
+	22, // 26: ateom.GetWorkloadStatsResponse.sample:type_name -> ateom.WorkloadStatsSample
+	22, // 27: ateom.GetActiveWorkloadStatsResponse.samples:type_name -> ateom.WorkloadStatsSample
+	6,  // 28: ateom.Ateom.RunWorkload:input_type -> ateom.RunWorkloadRequest
+	17, // 29: ateom.Ateom.CheckpointWorkload:input_type -> ateom.CheckpointWorkloadRequest
+	19, // 30: ateom.Ateom.RestoreWorkload:input_type -> ateom.RestoreWorkloadRequest
+	21, // 31: ateom.Ateom.GetWorkloadStats:input_type -> ateom.GetWorkloadStatsRequest
+	24, // 32: ateom.Ateom.GetActiveWorkloadStats:input_type -> ateom.GetActiveWorkloadStatsRequest
+	4,  // 33: ateom.Ateom.TerminateWorkload:input_type -> ateom.TerminateWorkloadRequest
+	16, // 34: ateom.Ateom.RunWorkload:output_type -> ateom.RunWorkloadResponse
+	18, // 35: ateom.Ateom.CheckpointWorkload:output_type -> ateom.CheckpointWorkloadResponse
+	20, // 36: ateom.Ateom.RestoreWorkload:output_type -> ateom.RestoreWorkloadResponse
+	23, // 37: ateom.Ateom.GetWorkloadStats:output_type -> ateom.GetWorkloadStatsResponse
+	25, // 38: ateom.Ateom.GetActiveWorkloadStats:output_type -> ateom.GetActiveWorkloadStatsResponse
+	5,  // 39: ateom.Ateom.TerminateWorkload:output_type -> ateom.TerminateWorkloadResponse
+	34, // [34:40] is the sub-list for method output_type
+	28, // [28:34] is the sub-list for method input_type
+	28, // [28:28] is the sub-list for extension type_name
+	28, // [28:28] is the sub-list for extension extendee
+	0,  // [0:28] is the sub-list for field type_name
 }
 
 func init() { file_ateom_proto_init() }

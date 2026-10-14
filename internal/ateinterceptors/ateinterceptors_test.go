@@ -465,6 +465,7 @@ func TestDebugRedactFieldsArePinned(t *testing.T) {
 	want := map[string]bool{
 		"ateapi.EnvVar.value":                           true,
 		"ateapi.MintActorJWTResponse.actor_jwt":         true,
+		"ateapi.MintSupervisorBootstrapResponse.token":  true,
 		"atelet.EnvEntry.value":                         true,
 		"credprovider.FetchSecretResponse.opaque_bytes": true,
 	}
@@ -508,5 +509,20 @@ func TestServerUnaryInterceptorLogsNilResponseOnHandlerError(t *testing.T) {
 	}
 	if !strings.Contains(log.String(), `"resp":null`) {
 		t.Errorf("nil response should log as null: %s", log.String())
+	}
+}
+
+func TestServerUnaryInterceptorRedactsSupervisorBootstrap(t *testing.T) {
+	log := captureDefaultLog(t)
+	response := &ateapipb.MintSupervisorBootstrapResponse{Token: "synthetic-bootstrap-secret"}
+	_, err := ServerUnaryInterceptor(context.Background(), &ateapipb.MintSupervisorBootstrapRequest{}, &grpc.UnaryServerInfo{FullMethod: "/ateapi.WorkerService/MintSupervisorBootstrap"}, func(context.Context, interface{}) (interface{}, error) { return response, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(log.String(), response.Token) || !strings.Contains(log.String(), protoredact.Placeholder) {
+		t.Fatal("supervisor credential log redaction failed")
+	}
+	if response.Token != "synthetic-bootstrap-secret" {
+		t.Fatal("client response mutated")
 	}
 }

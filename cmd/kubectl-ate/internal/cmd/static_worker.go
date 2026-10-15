@@ -74,7 +74,7 @@ func (r staticWorkerRegistration) desired(pod *corev1.Pod) (*ateapipb.Worker, er
 	observed := pod.Status.ContainerStatuses[0]
 	_, digest, _ := strings.Cut(r.image, "@")
 	imageID := strings.TrimPrefix(strings.TrimPrefix(observed.ImageID, "docker-pullable://"), "containerd://")
-	if observed.Name != "ateom" || !observed.Ready || observed.State.Running == nil || observed.ContainerID == "" || observed.Image != r.image || (imageID != r.image && imageID != digest) {
+	if observed.Name != "ateom" || !observed.Ready || observed.State.Running == nil || observed.ContainerID == "" || (imageID != r.image && imageID != digest) {
 		return nil, fmt.Errorf("static worker running image or container identity differs")
 	}
 	if _, err := netip.ParseAddr(pod.Status.PodIP); err != nil {

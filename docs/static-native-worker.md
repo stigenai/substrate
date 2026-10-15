@@ -15,8 +15,9 @@ ATE_NAMESPACE=fabriek-native ATE_API_SERVICE_NAME=api \
 The bounded command reads Kubernetes only and creates or replays that exact
 worker in the private API. An endpoint override, unexpected existing inventory,
 changed Pod, changed image or shared discovery label denies. The one Ready,
-Running container must report the exact pinned image and runtime image digest;
-a changed container ID or image observation during registration also denies.
+Running container must report the exact pinned manifest in its runtime ImageID;
+the runtime's display Image may instead contain its configuration digest.
+A changed container ID or image observation during registration also denies.
 Use a direct platform manifest pin, not an unverified multi-platform index. The private API
 must already have the matching service identity and private state. The command
 does not create the namespace, Pods, capacity, actors or tasks, and never updates

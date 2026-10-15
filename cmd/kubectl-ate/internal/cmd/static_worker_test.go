@@ -107,6 +107,28 @@ func TestStaticRegistrationCreatesOnlyExactWorkerAndReplays(t *testing.T) {
 		})
 	}
 }
+
+func TestStaticRegistrationAcceptsRuntimeConfigDisplayWithExactManifest(t *testing.T) {
+	r, p := staticFixture()
+	// containerd reports the config digest as Image while ImageID retains the
+	// reviewed manifest reference. Only the latter identifies the running image.
+	p.Status.ContainerStatuses[0].Image = "sha256:" + strings.Repeat("b", 64)
+	k := fake.NewClientset(p)
+	f := &staticRegistry{}
+	for range 2 {
+		w, err := registerStaticWorker(t.Context(), k.CoreV1().Pods(r.namespace), f, r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if w.GetWorkerPodUid() != r.uid || w.GetStatus() != nil {
+			t.Fatalf("unexpected capacity or identity: %v", w)
+		}
+	}
+	if f.created != 1 {
+		t.Fatalf("created %d times", f.created)
+	}
+}
+
 func TestStaticRegistrationRejectsPodDriftBeforeCreate(t *testing.T) {
 	cases := map[string]func(*corev1.Pod){
 		"stale_ready_image": func(p *corev1.Pod) {

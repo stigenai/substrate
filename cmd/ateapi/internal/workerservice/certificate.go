@@ -27,6 +27,7 @@ import (
 	"github.com/agent-substrate/substrate/cmd/ateapi/internal/ateletauth"
 	"github.com/agent-substrate/substrate/cmd/ateapi/internal/store"
 	"github.com/agent-substrate/substrate/internal/resources"
+	"github.com/agent-substrate/substrate/internal/substratex509"
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -88,6 +89,11 @@ func (s *Server) MintAteomActorCertificate(ctx context.Context, req *ateapipb.Mi
 	}
 
 	// Sign and return the actor cert.
+	if err := substratex509.AddActorIdentityToCertificate(&substratex509.ActorIdentity{
+		Atespace: dbActor.GetMetadata().GetAtespace(), ActorName: dbActor.GetMetadata().GetName(), ActorUid: dbActor.GetMetadata().GetUid(),
+	}, template); err != nil {
+		return nil, fmt.Errorf("while binding actor certificate identity: %w", err)
+	}
 	chain, err := s.actorIDCAPool.CreateCertificate(template, csr.PublicKey)
 	if err != nil {
 		return nil, fmt.Errorf("while signing certificate: %w", err)

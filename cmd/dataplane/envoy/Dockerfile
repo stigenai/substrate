@@ -27,6 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY dynamic-modules/egress-policy/ .
 
 # Build release version of the dynamic module shared library
+ARG CARGO_BUILD_JOBS=2
 RUN cargo build --release --locked
 
 # Stage 2: Create the runtime image containing Envoy and the built dynamic module shared library

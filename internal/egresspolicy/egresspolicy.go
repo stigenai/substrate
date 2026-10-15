@@ -17,7 +17,7 @@
 // matches with, so the two cannot drift.
 //
 // Requests are decided here; TLS connections are decided by the dataplane
-// against SNIRules. tls_passthrough rules match nothing for now.
+// against SNIRules. Native TLS requires an explicitly pinned destination.
 //
 // The package is pure: no I/O, no logging.
 package egresspolicy
@@ -169,6 +169,25 @@ type SNIMode string
 
 // SNIModeMITM terminates TLS and decides each request inside.
 const SNIModeMITM SNIMode = "mitm"
+
+// SNIModePassthrough preserves the origin's TLS through a pinned TCP upstream.
+const SNIModePassthrough SNIMode = "passthrough"
+
+// AllowsExactTLSPassthrough requires a rule naming only the pinned host and
+// port. Broad wildcard or multi-destination grants do not enable native TLS.
+func (p *Policy) AllowsExactTLSPassthrough(dest Destination) bool {
+	if dest.Hostname == "" || dest.Port == 0 || dest.IP.IsValid() {
+		return false
+	}
+	for _, rule := range p.rules {
+		if rule.protocol == protocolTLSPassthrough && !rule.anyPort &&
+			len(rule.ports) == 1 && rule.ports[0] == dest.Port &&
+			len(rule.patterns) == 1 && rule.patterns[0].String() == dest.Hostname {
+			return true
+		}
+	}
+	return false
+}
 
 // SNIRule is an SNI pattern and the mode applied when it matches first.
 type SNIRule struct {

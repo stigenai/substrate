@@ -247,6 +247,12 @@ func (s *RouterServer) Run(ctx context.Context) error {
 		}
 
 		egressHandler := egress.New(s.apiClient, actorIdentityRoots, s.cfg.EgressPolicyCacheTTL, provider, providerName)
+		if s.cfg.NativeTLSDestination != "" {
+			egressHandler, err = egress.NewNativeTLS(s.apiClient, actorIdentityRoots, s.cfg.NativeTLSDestination)
+			if err != nil {
+				return err
+			}
+		}
 		handlers[egressHandler.Direction()] = egressHandler
 	}
 

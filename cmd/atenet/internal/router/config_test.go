@@ -384,3 +384,32 @@ func TestSetOtlpCollectorClearsPreviousCollector(t *testing.T) {
 		t.Errorf("buildTracing() = %v, want nil after a rejected address", tr)
 	}
 }
+
+func TestNativeTLSConfig(t *testing.T) {
+	valid := routerConfig{Mode: ModeEgress, AtenetRouter: "envoy", NativeTLSDestination: "native.example.test:8443"}
+	if err := valid.validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"all", "ingress", "agentgateway", "cache", "provider", "invalid destination"} {
+		t.Run(name, func(t *testing.T) {
+			c := valid
+			switch name {
+			case "all":
+				c.Mode = ModeAll
+			case "ingress":
+				c.Mode = ModeIngress
+			case "agentgateway":
+				c.AtenetRouter = "agentgateway"
+			case "cache":
+				c.EgressPolicyCacheTTL = time.Second
+			case "provider":
+				c.CredentialProvider.Address = "provider:443"
+			case "invalid destination":
+				c.NativeTLSDestination = "127.0.0.1:8443"
+			}
+			if c.validate() == nil {
+				t.Fatal("unsafe native TLS config accepted")
+			}
+		})
+	}
+}

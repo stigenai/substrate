@@ -135,8 +135,8 @@ func TestMintAteomActorCertificate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ActorIdentityFromCertificate: %v", err)
 	}
-	if identity != nil {
-		t.Errorf("ActorIdentity = %+v, want nil (ateom certificates should not carry ActorIdentity)", identity)
+	if identity == nil || identity.Atespace != "team-a" || identity.ActorName != "my-actor" || identity.ActorUid != actor.GetMetadata().GetUid() {
+		t.Errorf("ActorIdentity = %+v, want exact stored actor identity", identity)
 	}
 }
 

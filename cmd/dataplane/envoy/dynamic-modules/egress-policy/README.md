@@ -30,8 +30,14 @@ it:
 | Not TLS | `cleartext` | `egress_cleartext`: decided per request |
 | A transport protocol other than `tls` or `raw_buffer` | `denied` | none |
 
-`tls_passthrough` rules are not in the answer yet, so their names are closed
-rather than forwarded. A connection that sends nothing before the listener
+Ordinary gateways omit `tls_passthrough` rules. An isolated gateway explicitly
+configured with `--native-tls-destination=hostname:port` can emit one exact
+`passthrough` rule. Its private matcher must select a TCP proxy to that same
+static destination, with no default, cleartext, MITM, dynamic proxy or
+ORIGINAL_DST chain. The native connection reaches the origin without TLS
+termination. This mode requires a current actor UID certificate extension, an
+exact one-host/one-port policy, zero policy cache TTL and no credential provider.
+The ordinary gateway remains unchanged. A connection that sends nothing before the listener
 filter timeout never reaches this filter, sets no verdict, and is closed.
 
 The Go side of the contract is `cmd/atenet/internal/router/extproc`

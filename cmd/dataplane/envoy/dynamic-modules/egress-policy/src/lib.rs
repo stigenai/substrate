@@ -32,6 +32,9 @@ pub const ATE_EGRESS_FILTER_CHAIN: &[u8] = b"dev.ate.egress.filter_chain";
 /// Verdict for TLS an https rule allows.
 pub const ATE_EGRESS_FILTER_CHAIN_MITM: &str = "mitm";
 
+/// Verdict for native TLS to an operator-pinned TCP upstream.
+pub const ATE_EGRESS_FILTER_CHAIN_PASSTHROUGH: &str = "passthrough";
+
 /// Verdict for anything that is not TLS.
 pub const ATE_EGRESS_FILTER_CHAIN_CLEARTEXT: &str = "cleartext";
 
@@ -40,6 +43,9 @@ pub const ATE_EGRESS_FILTER_CHAIN_DENIED: &str = "denied";
 
 /// Mode of a rule whose match terminates the connection.
 pub const SNI_MODE_MITM: &str = "mitm";
+
+/// Mode emitted only by the private native TLS gateway.
+pub const SNI_MODE_PASSTHROUGH: &str = "passthrough";
 
 /// Transport protocol tls_inspector sets for TLS.
 const TRANSPORT_TLS: &str = "tls";
@@ -113,6 +119,7 @@ pub fn tls_verdict(policy: Option<&EgressPolicy>, sni: Option<&str>) -> &'static
     .find(|rule| pattern_matches(&rule.pattern, &hostname))
   {
     Some(rule) if rule.mode == SNI_MODE_MITM => ATE_EGRESS_FILTER_CHAIN_MITM,
+    Some(rule) if rule.mode == SNI_MODE_PASSTHROUGH => ATE_EGRESS_FILTER_CHAIN_PASSTHROUGH,
     _ => ATE_EGRESS_FILTER_CHAIN_DENIED,
   }
 }
@@ -200,6 +207,19 @@ mod tests {
         })
         .collect(),
     }
+  }
+
+  #[test]
+  fn test_native_tls_exact_sni() {
+    let p = policy(&[("native.example.test", "passthrough")]);
+    assert_eq!(
+      tls_verdict(Some(&p), Some("native.example.test")),
+      ATE_EGRESS_FILTER_CHAIN_PASSTHROUGH
+    );
+    for sni in [None, Some(""), Some("other.example.test"), Some("x.native.example.test")] {
+      assert_eq!(tls_verdict(Some(&p), sni), ATE_EGRESS_FILTER_CHAIN_DENIED);
+    }
+    assert_eq!(tls_verdict(None, Some("native.example.test")), ATE_EGRESS_FILTER_CHAIN_DENIED);
   }
 
   #[test]

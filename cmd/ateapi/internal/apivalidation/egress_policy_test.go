@@ -17,6 +17,7 @@ package apivalidation
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/agent-substrate/substrate/cmd/ateapi/internal/defaults"
@@ -395,6 +396,9 @@ func TestValidateEgressPolicyRules(t *testing.T) {
 	httpsRule := func(ports *ateapipb.Ports, patterns ...string) *ateapipb.EgressRule {
 		return &ateapipb.EgressRule{Https: &ateapipb.HTTPSRule{Hostnames: patterns, Ports: ports}}
 	}
+	scopedHTTPSRule := func(host string, prefixes ...string) *ateapipb.EgressRule {
+		return &ateapipb.EgressRule{Https: &ateapipb.HTTPSRule{Hostnames: []string{host}, PathPrefixes: prefixes}}
+	}
 	passthroughRule := func(ports *ateapipb.Ports, patterns ...string) *ateapipb.EgressRule {
 		return &ateapipb.EgressRule{TlsPassthrough: &ateapipb.TLSPassthroughRule{Hostnames: patterns, Ports: ports}}
 	}
@@ -730,6 +734,85 @@ func TestValidateEgressPolicyRules(t *testing.T) {
 		},
 		want: field.ErrorList{
 			field.Invalid(rules.Index(2).Child("tls_passthrough", "hostnames").Index(0), "*.example.com", `ties with egress_policy.rules[1].https.hostnames[0] on port 443`),
+		},
+	}, {
+		name: "https rules with disjoint path prefixes do not tie",
+		mutate: func(p *ateapipb.EgressPolicy) {
+			p.Rules = []*ateapipb.EgressRule{scopedHTTPSRule("github.com", "/a/", "/b/"), scopedHTTPSRule("github.com", "/c/")}
+		},
+	}, {
+		name: "a prefixed https rule and a catch-all do not tie",
+		mutate: func(p *ateapipb.EgressPolicy) {
+			p.Rules = []*ateapipb.EgressRule{scopedHTTPSRule("github.com", "/a/"), scopedHTTPSRule("github.com")}
+		},
+	}, {
+		name: "https rules sharing a path prefix tie",
+		mutate: func(p *ateapipb.EgressPolicy) {
+			p.Rules = []*ateapipb.EgressRule{scopedHTTPSRule("github.com", "/a/"), scopedHTTPSRule("github.com", "/b/", "/a/")}
+		},
+		want: field.ErrorList{
+			field.Invalid(rules.Index(1).Child("https", "hostnames").Index(0), "github.com", `ties with egress_policy.rules[0].https.hostnames[0] on port 443 for path prefix "/a/"`),
+		},
+	}, {
+		name: "two catch-all https rules tie",
+		mutate: func(p *ateapipb.EgressPolicy) {
+			p.Rules = []*ateapipb.EgressRule{scopedHTTPSRule("github.com"), scopedHTTPSRule("github.com")}
+		},
+		want: field.ErrorList{
+			field.Invalid(rules.Index(1).Child("https", "hostnames").Index(0), "github.com", `ties with egress_policy.rules[0].https.hostnames[0] on port 443`),
+		},
+	}, {
+		name: "path prefix without a leading slash",
+		mutate: func(p *ateapipb.EgressPolicy) {
+			p.Rules = []*ateapipb.EgressRule{scopedHTTPSRule("github.com", "a/")}
+		},
+		want: field.ErrorList{
+			field.Invalid(rules.Index(0).Child("https", "path_prefixes").Index(0), "a/", `must start with "/" and contain no "?" or "#"`),
+		},
+	}, {
+		name: "path prefix with a query",
+		mutate: func(p *ateapipb.EgressPolicy) {
+			p.Rules = []*ateapipb.EgressRule{scopedHTTPSRule("github.com", "/a?x=1")}
+		},
+		want: field.ErrorList{
+			field.Invalid(rules.Index(0).Child("https", "path_prefixes").Index(0), "/a?x=1", `must start with "/" and contain no "?" or "#"`),
+		},
+	}, {
+		name: "path prefix with a fragment",
+		mutate: func(p *ateapipb.EgressPolicy) {
+			p.Rules = []*ateapipb.EgressRule{scopedHTTPSRule("github.com", "/a#x")}
+		},
+		want: field.ErrorList{
+			field.Invalid(rules.Index(0).Child("https", "path_prefixes").Index(0), "/a#x", `must start with "/" and contain no "?" or "#"`),
+		},
+	}, {
+		name: "too many path prefixes",
+		mutate: func(p *ateapipb.EgressPolicy) {
+			var many []string
+			for i := range 17 {
+				many = append(many, fmt.Sprintf("/p%d/", i))
+			}
+			p.Rules = []*ateapipb.EgressRule{scopedHTTPSRule("github.com", many...)}
+		},
+		want: field.ErrorList{
+			field.TooMany(rules.Index(0).Child("https", "path_prefixes"), 17, 16).WithOrigin("maxItems"),
+		},
+	}, {
+		name: "path prefix too long",
+		mutate: func(p *ateapipb.EgressPolicy) {
+			long := "/" + strings.Repeat("a", 1024)
+			p.Rules = []*ateapipb.EgressRule{scopedHTTPSRule("github.com", long)}
+		},
+		want: field.ErrorList{
+			field.TooLong(rules.Index(0).Child("https", "path_prefixes").Index(0), "", 1024).WithOrigin("maxLength"),
+		},
+	}, {
+		name: "duplicate path prefix",
+		mutate: func(p *ateapipb.EgressPolicy) {
+			p.Rules = []*ateapipb.EgressRule{scopedHTTPSRule("github.com", "/a/", "/a/")}
+		},
+		want: field.ErrorList{
+			field.Duplicate(rules.Index(0).Child("https", "path_prefixes").Index(1), "/a/"),
 		},
 	}, {
 		name: "missing static header",

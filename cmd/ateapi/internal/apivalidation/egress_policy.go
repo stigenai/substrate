@@ -82,14 +82,16 @@ func ValidateCustom_EgressPolicy_Metadata(_ context.Context, _ operation.Operati
 	return nil
 }
 
-// ValidateCustom_EgressPolicy_Rules rejects two rules that tie on a pattern
-// and a port, whatever their protocols: the gateway would have no way to pick
-// one. Defaults are applied before validation, so an http rule left on 80
+// ValidateCustom_EgressPolicy_Rules rejects two rules that tie on a pattern,
+// a port and a path prefix, whatever their protocols: the gateway would have
+// no way to pick one. A rule with no path prefixes holds the empty prefix, so
+// it ties with another such rule but not with a prefixed one. Defaults are applied before validation, so an http rule left on 80
 // and an https rule left on 443 never tie.
 func ValidateCustom_EgressPolicy_Rules(_ context.Context, _ operation.Operation, p *field.Path, rules, _ []*ateapipb.EgressRule) field.ErrorList {
 	type key struct {
 		pattern string
 		port    portKey
+		prefix  string
 	}
 	type match struct {
 		rule int
@@ -98,20 +100,22 @@ func ValidateCustom_EgressPolicy_Rules(_ context.Context, _ operation.Operation,
 	var errs field.ErrorList
 	seen := map[key]match{}
 	for i, rule := range rules {
-		member, patterns, ports := ruleMatchFields(rule)
+		member, patterns, ports, prefixes := ruleMatchFields(rule)
 		if member == "" {
 			continue // handled by the union check
 		}
 		for j, pattern := range patterns {
 			path := p.Index(i).Child(member, "hostnames").Index(j)
 			for _, port := range portKeysOf(ports) {
-				k := key{pattern, port}
-				prior, ok := seen[k]
-				switch {
-				case !ok:
-					seen[k] = match{rule: i, path: path}
-				case prior.rule != i: // a repeat within one rule is reported by the set check
-					errs = append(errs, field.Invalid(path, pattern, fmt.Sprintf("ties with %s on %s", prior.path, port)))
+				for _, prefix := range prefixes {
+					k := key{pattern, port, prefix}
+					prior, ok := seen[k]
+					switch {
+					case !ok:
+						seen[k] = match{rule: i, path: path}
+					case prior.rule != i: // a repeat within one rule is reported by the set check
+						errs = append(errs, field.Invalid(path, pattern, fmt.Sprintf("ties with %s on %s%s", prior.path, port, prefixSuffix(prefix))))
+					}
 				}
 			}
 		}
@@ -120,17 +124,30 @@ func ValidateCustom_EgressPolicy_Rules(_ context.Context, _ operation.Operation,
 }
 
 // ruleMatchFields is what a rule matches on: the union member, its hostnames,
-// and its ports. Everything is empty for a rule that sets no member.
-func ruleMatchFields(rule *ateapipb.EgressRule) (member string, hostnames []string, ports *ateapipb.Ports) {
+// its ports, and its path prefixes, which are [""] for a rule that matches
+// every path. Everything is empty for a rule that sets no member.
+func ruleMatchFields(rule *ateapipb.EgressRule) (member string, hostnames []string, ports *ateapipb.Ports, prefixes []string) {
+	allPaths := []string{""}
 	switch {
 	case rule.GetHttp() != nil:
-		return "http", rule.GetHttp().GetHostnames(), rule.GetHttp().GetPorts()
+		return "http", rule.GetHttp().GetHostnames(), rule.GetHttp().GetPorts(), allPaths
 	case rule.GetHttps() != nil:
-		return "https", rule.GetHttps().GetHostnames(), rule.GetHttps().GetPorts()
+		prefixes = rule.GetHttps().GetPathPrefixes()
+		if len(prefixes) == 0 {
+			prefixes = allPaths
+		}
+		return "https", rule.GetHttps().GetHostnames(), rule.GetHttps().GetPorts(), prefixes
 	case rule.GetTlsPassthrough() != nil:
-		return "tls_passthrough", rule.GetTlsPassthrough().GetHostnames(), rule.GetTlsPassthrough().GetPorts()
+		return "tls_passthrough", rule.GetTlsPassthrough().GetHostnames(), rule.GetTlsPassthrough().GetPorts(), allPaths
 	}
-	return "", nil, nil
+	return "", nil, nil, nil
+}
+
+func prefixSuffix(prefix string) string {
+	if prefix == "" {
+		return ""
+	}
+	return fmt.Sprintf(" for path prefix %q", prefix)
 }
 
 // portKey is one thing a Ports matches: a port number, or every port. Its
@@ -164,6 +181,18 @@ func ValidateCustom_HTTPRule_Hostnames(_ context.Context, _ operation.Operation,
 
 func ValidateCustom_HTTPSRule_Hostnames(_ context.Context, _ operation.Operation, p *field.Path, patterns, _ []string) field.ErrorList {
 	return validateHostnamePatterns(patterns, p)
+}
+
+// Each prefix is matched against the path before any "?", so it must be an
+// absolute path with no query or fragment.
+func ValidateCustom_HTTPSRule_PathPrefixes(_ context.Context, _ operation.Operation, p *field.Path, prefixes, _ []string) field.ErrorList {
+	var errs field.ErrorList
+	for i, prefix := range prefixes {
+		if !strings.HasPrefix(prefix, "/") || strings.ContainsAny(prefix, "?#") {
+			errs = append(errs, field.Invalid(p.Index(i), prefix, `must start with "/" and contain no "?" or "#"`))
+		}
+	}
+	return errs
 }
 
 func ValidateCustom_TLSPassthroughRule_Hostnames(_ context.Context, _ operation.Operation, p *field.Path, patterns, _ []string) field.ErrorList {

@@ -50,6 +50,13 @@ type Destination struct {
 	// does not, in which case a rule's ports are not enforced. A port in a
 	// request's authority is not this.
 	Port uint16
+	// Path is the request path, with any query, when HasPath. Only https rules
+	// with path prefixes look at it.
+	Path string
+	// HasPath reports that Path is known. It is false for a decision made
+	// before any request exists, such as the one on a TLS connection's SNI,
+	// where a rule with path prefixes matches whatever its prefixes are.
+	HasPath bool
 }
 
 // Decision is the outcome of evaluating a policy against a Destination.
@@ -84,7 +91,12 @@ type compiledRule struct {
 	// ports the rule names; anyPort when it names all of them.
 	ports   []uint16
 	anyPort bool
-	effects *ateapipb.HttpRuleEffects
+	// pathScoped is set when the rule names path prefixes, even if none
+	// survived Compile, so a dropped prefix can never widen the rule to all
+	// paths.
+	pathScoped   bool
+	pathPrefixes []string
+	effects      *ateapipb.HttpRuleEffects
 }
 
 // Ports read for an http or https rule that names none. ateapi fills these
@@ -119,6 +131,14 @@ func Compile(policy *ateapipb.EgressPolicy) (*Policy, []error) {
 			cr.protocol, cr.effects = protocolHTTPS, rule.GetHttps().GetEffects()
 			member = "https"
 			raw, ports, defaultPort = rule.GetHttps().GetHostnames(), rule.GetHttps().GetPorts(), defaultHTTPSPort
+			cr.pathScoped = len(rule.GetHttps().GetPathPrefixes()) > 0
+			for _, prefix := range rule.GetHttps().GetPathPrefixes() {
+				if !strings.HasPrefix(prefix, "/") {
+					errs = append(errs, fmt.Errorf("rules[%d].https.path_prefixes: %q does not start with \"/\"", i, prefix))
+					continue
+				}
+				cr.pathPrefixes = append(cr.pathPrefixes, prefix)
+			}
 		case rule.GetTlsPassthrough() != nil:
 			cr.protocol = protocolTLSPassthrough
 			member = "tls_passthrough"
@@ -217,6 +237,12 @@ func (p *Policy) SNIRules(port uint16) []SNIRule {
 // address in its authority and the port the actor dialed. decrypted selects
 // the https rules, for a request the gateway terminated TLS for; otherwise
 // the http rules apply. A tls_passthrough rule never decides a request.
+//
+// When dest.HasPath, an https rule with path prefixes decides only a request
+// whose path starts with one of them, and the longest matching prefix wins
+// over a shorter one and over a rule with no prefixes. A path that a server
+// could resolve to a different one is denied if any such rule matches the
+// name and port; see unsafePath.
 func (p *Policy) EvaluateRequest(dest Destination, decrypted bool) Decision {
 	want := protocolHTTP
 	if decrypted {
@@ -231,12 +257,57 @@ func (p *Policy) EvaluateRequest(dest Destination, decrypted bool) Decision {
 		if !ok {
 			continue
 		}
-		rank := matchRank{name: name, port: rule.portRank()}
+		if rule.pathScoped && dest.HasPath && unsafePath(dest.Path) {
+			return Decision{RuleIndex: -1}
+		}
+		pathRank, ok := rule.matchPath(dest)
+		if !ok {
+			continue
+		}
+		rank := matchRank{name: name, port: rule.portRank(), path: pathRank}
 		if best.RuleIndex == -1 || rank.beats(bestRank) {
 			best, bestRank = Decision{Allowed: true, RuleIndex: i, Effects: rule.effects}, rank
 		}
 	}
 	return best
+}
+
+// matchPath reports whether the rule applies to dest's path, and the path
+// rank: 0 for a rule with no prefixes, and the negated length of the longest
+// matching prefix otherwise, so a longer prefix is more specific. It matches
+// the raw path up to "?", with no decoding.
+func (r compiledRule) matchPath(dest Destination) (int, bool) {
+	if !r.pathScoped || !dest.HasPath {
+		return 0, true
+	}
+	path, _, _ := strings.Cut(dest.Path, "?")
+	best, found := 0, false
+	for _, prefix := range r.pathPrefixes {
+		if strings.HasPrefix(path, prefix) && len(prefix) > -best {
+			best, found = -len(prefix), true
+		}
+	}
+	return best, found
+}
+
+// unsafePath reports whether a server might resolve path to a different one
+// than the raw text a prefix is matched against: a "." or ".." segment, an
+// encoded dot or slash, or a backslash. Without this, "/other/../scoped/x"
+// would match a catch-all rule and carry its credential to a path that the
+// server reads as scoped. Such a path is denied rather than normalized, since
+// the gateway cannot know how the origin decodes it.
+func unsafePath(rawPath string) bool {
+	path, _, _ := strings.Cut(rawPath, "?")
+	path = strings.ToLower(path)
+	if strings.ContainsAny(path, "\\") || strings.Contains(path, "%2f") || strings.Contains(path, "%5c") {
+		return true
+	}
+	for _, segment := range strings.Split(path, "/") {
+		if dots := strings.ReplaceAll(segment, "%2e", "."); dots == "." || dots == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // matchName reports whether any pattern matches dest, and how specific the
@@ -272,14 +343,18 @@ func (r compiledRule) portRank() int {
 }
 
 // matchRank orders matches as the API describes: the name first, then the
-// port, lower is more specific. Rules that tie keep policy order.
-type matchRank struct{ name, port int }
+// port, then the path, lower is more specific. Rules that tie keep policy
+// order.
+type matchRank struct{ name, port, path int }
 
 func (m matchRank) beats(o matchRank) bool {
 	if m.name != o.name {
 		return m.name < o.name
 	}
-	return m.port < o.port
+	if m.port != o.port {
+		return m.port < o.port
+	}
+	return m.path < o.path
 }
 
 // HostnamePattern is one parsed host or SNI pattern: an exact name, a

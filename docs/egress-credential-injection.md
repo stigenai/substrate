@@ -97,6 +97,37 @@ atespace access.
   `ate-secret://k8s.io/default/<namespace>/<secret>/<key>`. Segments are used
   literally: a URI with `%`-escapes is refused when the policy is written.
 
+### Different credentials by path
+
+An `https` rule can name `pathPrefixes`, so two rules for one host inject
+different credentials. The rule with no prefixes decides every other path:
+
+```yaml
+rules:
+- https:
+    hostnames: ["github.com"]
+    pathPrefixes: ["/zach-source/"]
+    effects:
+      replaceHeaders:
+      - header: Authorization
+        prefix: "Basic "
+        credentialUri: ate-secret://k8s.io/default/ns1/github/zs-basic
+- https:
+    hostnames: ["github.com"]
+    effects:
+      replaceHeaders:
+      - header: Authorization
+        prefix: "Basic "
+        credentialUri: ate-secret://k8s.io/default/ns1/github/basic
+```
+
+A request matches a prefix when its path, before any `?`, starts with it. No
+escape is decoded. The longest matching prefix decides. A request whose path
+has a `.` or `..` segment, an encoded dot, an encoded slash or a backslash is
+denied when a rule with prefixes covers its host and port, because the origin
+could read it as a different path. Rules for one host and port must not share
+a prefix. The TLS connection is allowed when any `https` rule covers its
+server name, so a path that no rule covers is denied per request.
 
 ## What the gateway does
 

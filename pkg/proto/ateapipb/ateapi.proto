@@ -533,6 +533,23 @@ message HTTPSRule {
   //
   // +k8s:optional
   HttpRuleEffects effects = 3;
+
+  // Request paths the rule applies to. A request matches when its path, up to
+  // any "?", starts with one of the prefixes; no escape is decoded. Empty
+  // means all paths. Each prefix must start with "/". Among rules that match
+  // the name and port, the rule with the longest matching prefix decides, and
+  // a rule with no prefixes decides only when no prefixed rule matches. A
+  // request whose path has a ".." segment or an encoded slash is denied when
+  // some prefixed rule matches its name and port. Two rules for the same name
+  // and port may not share a prefix. The TLS connection is allowed when any
+  // rule for its name and port is.
+  //
+  // +k8s:optional
+  // +k8s:maxItems=16
+  // +k8s:listType=set
+  // +k8s:eachVal=+k8s:maxLength=1024
+  // +k8s:customValidation # format
+  repeated string path_prefixes = 4;
 }
 
 // TLSPassthroughRule allows TLS that the gateway forwards without decryption.

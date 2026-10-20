@@ -78,6 +78,11 @@ const testSNI = "api.example.com"
 // with testSNI on the MITM leg. attrs overrides the defaults; an empty value
 // deletes one.
 func innerMetadata(leg, method, authority string, attrs map[string]string) *extproc.RequestMetadata {
+	return innerMetadataAt(leg, method, authority, "/v1/things?secret=1", attrs)
+}
+
+// innerMetadataAt is innerMetadata for a request to path.
+func innerMetadataAt(leg, method, authority, path string, attrs map[string]string) *extproc.RequestMetadata {
 	fields := map[string]string{
 		extproc.FilterChainNameAttribute:             leg,
 		extproc.ActorIdentityFilterStateAttribute:    testActorSPIFFEID,
@@ -100,7 +105,7 @@ func innerMetadata(leg, method, authority string, attrs map[string]string) *extp
 	return extproc.NewRequestMetadata([]*corev3.HeaderValue{
 		{Key: ":method", RawValue: []byte(method)},
 		{Key: ":authority", RawValue: []byte(authority)},
-		{Key: ":path", RawValue: []byte("/v1/things?secret=1")},
+		{Key: ":path", RawValue: []byte(path)},
 	}, map[string]*structpb.Struct{"envoy.filters.http.ext_proc": {Fields: values}})
 }
 
@@ -426,4 +431,83 @@ func TestCanceledCallerIsNotAPolicyFailure(t *testing.T) {
 	err := <-done
 	close(client.policyGate)
 	wantStatus(t, err, envoy_type.StatusCode_RequestTimeout)
+}
+
+// Two https rules for one host pick their credential by request path, and a
+// path no rule covers, or one a server could read differently, is denied.
+func TestMITMLegPicksCredentialByPath(t *testing.T) {
+	rule := func(uri string, prefixes ...string) *ateapipb.EgressRule {
+		return &ateapipb.EgressRule{Https: &ateapipb.HTTPSRule{
+			Hostnames:    []string{"api.example.com"},
+			PathPrefixes: prefixes,
+			Effects: &ateapipb.HttpRuleEffects{ReplaceHeaders: []*ateapipb.CredentialHeader{{
+				Header: "authorization", Prefix: "Basic ", CredentialUri: uri,
+			}}},
+		}}
+	}
+	scoped := rule("ate-secret://k8s/default/scoped", "/zach-source/")
+	catchAll := rule("ate-secret://k8s/default/catchall")
+	tests := []struct {
+		name    string
+		rules   []*ateapipb.EgressRule
+		path    string
+		wantURI string // empty means denied
+	}{
+		{"scoped path gets the scoped credential", []*ateapipb.EgressRule{catchAll, scoped}, "/zach-source/claude-factory.git/info/refs?service=git-receive-pack", "ate-secret://k8s/default/scoped"},
+		{"other path gets the catch-all", []*ateapipb.EgressRule{scoped, catchAll}, "/stigenai/substrate.git/info/refs?service=git-receive-pack", "ate-secret://k8s/default/catchall"},
+		{"dot-dot cannot pick the catch-all", []*ateapipb.EgressRule{scoped, catchAll}, "/stigenai/../zach-source/x.git/info/refs", ""},
+		{"encoded slash is denied", []*ateapipb.EgressRule{scoped, catchAll}, "/stigenai%2f..%2fzach-source/x", ""},
+		{"only scoped rules deny other paths", []*ateapipb.EgressRule{scoped}, "/stigenai/x", ""},
+		{"only scoped rules allow the connection and the scoped path", []*ateapipb.EgressRule{scoped}, "/zach-source/x", "ate-secret://k8s/default/scoped"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := &fakeProvider{resp: bearerTokenResponse("tok")}
+			h := injectionHandlerFor(&ateapipb.EgressPolicy{Rules: tc.rules}, provider, injectionProviderName)
+			md := innerMetadataAt(extproc.EgressTLSMITMFilterChainName, "GET", "api.example.com", tc.path, nil)
+			res, err := h.HandleRequestHeaders(context.Background(), md)
+			if tc.wantURI == "" {
+				wantStatus(t, err, envoy_type.StatusCode_Forbidden)
+				if provider.got != nil {
+					t.Errorf("provider asked for %q on a denied request", provider.got.GetUri())
+				}
+				return
+			}
+			wantAllowed(t, res, err)
+			if got := provider.got.GetUri(); got != tc.wantURI {
+				t.Errorf("credential URI = %q, want %q", got, tc.wantURI)
+			}
+		})
+	}
+}
+
+// A wildcard host with path prefixes picks its credential by path like an
+// exact host does.
+func TestMITMLegPicksCredentialByPathUnderWildcardHost(t *testing.T) {
+	rule := func(uri string, prefixes ...string) *ateapipb.EgressRule {
+		return &ateapipb.EgressRule{Https: &ateapipb.HTTPSRule{
+			Hostnames:    []string{"*.example.com"},
+			PathPrefixes: prefixes,
+			Effects: &ateapipb.HttpRuleEffects{ReplaceHeaders: []*ateapipb.CredentialHeader{{
+				Header: "authorization", Prefix: "Basic ", CredentialUri: uri,
+			}}},
+		}}
+	}
+	rules := []*ateapipb.EgressRule{rule("ate-secret://k8s/default/catchall"), rule("ate-secret://k8s/default/scoped", "/zach-source/")}
+	for path, wantURI := range map[string]string{
+		"/zach-source/x.git/info/refs": "ate-secret://k8s/default/scoped",
+		"/zach-sourcery/x":             "ate-secret://k8s/default/catchall",
+		"/stigenai/x":                  "ate-secret://k8s/default/catchall",
+	} {
+		t.Run(path, func(t *testing.T) {
+			provider := &fakeProvider{resp: bearerTokenResponse("tok")}
+			h := injectionHandlerFor(&ateapipb.EgressPolicy{Rules: rules}, provider, injectionProviderName)
+			md := innerMetadataAt(extproc.EgressTLSMITMFilterChainName, "GET", "api.example.com", path, nil)
+			res, err := h.HandleRequestHeaders(context.Background(), md)
+			wantAllowed(t, res, err)
+			if got := provider.got.GetUri(); got != wantURI {
+				t.Errorf("credential URI = %q, want %q", got, wantURI)
+			}
+		})
+	}
 }

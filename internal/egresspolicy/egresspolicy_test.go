@@ -473,3 +473,131 @@ func TestSNIRules(t *testing.T) {
 		})
 	}
 }
+
+func scopedHTTPSRule(host string, prefixes ...string) *ateapipb.EgressRule {
+	return &ateapipb.EgressRule{Https: &ateapipb.HTTPSRule{Hostnames: []string{host}, PathPrefixes: prefixes}}
+}
+
+func atPath(host, path string) Destination {
+	return Destination{Hostname: host, Path: path, HasPath: true}
+}
+
+func TestEvaluateRequestPathPrefixes(t *testing.T) {
+	// A scoped rule, a catch-all, and a longer prefix, in that policy order.
+	zs := scopedHTTPSRule("github.com", "/zach-source/")
+	all := httpsRule("github.com")
+	nested := scopedHTTPSRule("github.com", "/zach-source/private/", "/other/")
+	tests := []struct {
+		name   string
+		policy *ateapipb.EgressPolicy
+		dest   Destination
+		want   int // deciding rule index, -1 for a deny
+	}{
+		{"prefix beats catch-all", policy(all, zs), atPath("github.com", "/zach-source/claude-factory.git/info/refs?service=git-receive-pack"), 1},
+		{"catch-all serves other paths", policy(all, zs), atPath("github.com", "/stigenai/substrate.git/info/refs"), 0},
+		{"policy order does not matter", policy(zs, all), atPath("github.com", "/stigenai/x"), 1},
+		{"longest prefix wins", policy(zs, nested, all), atPath("github.com", "/zach-source/private/repo.git"), 1},
+		{"shorter prefix when the longer does not match", policy(nested, zs, all), atPath("github.com", "/zach-source/public.git"), 1},
+		{"second prefix of a rule", policy(zs, nested), atPath("github.com", "/other/x"), 1},
+		{"no match among scoped rules denies", policy(zs, nested), atPath("github.com", "/stigenai/x"), -1},
+		{"query is not part of the path", policy(all, zs), atPath("github.com", "/stigenai/x?next=/zach-source/"), 0},
+		{"prefix is matched as a prefix, not a segment", policy(all, zs), atPath("github.com", "/zach-source-evil/x"), 0},
+		{"prefix is not an owner name prefix", policy(all, zs), atPath("github.com", "/zach-sourcery/x"), 0},
+		{"a semicolon after dot-dot is not a dot segment", policy(all, zs), atPath("github.com", "/zach-source/..;/x"), 1},
+		{"a doubled leading slash is another path", policy(all, zs), atPath("github.com", "//zach-source/x"), 0},
+		{"git smart HTTP POST takes the scoped rule", policy(all, scopedHTTPSRule("github.com", "/o/")), atPath("github.com", "/o/r.git/git-upload-pack"), 1},
+		{"empty path matches no prefix", policy(all, zs), atPath("github.com", ""), 0},
+		{"empty path under only scoped rules denies", policy(zs), atPath("github.com", ""), -1},
+		{"prefixes are case sensitive", policy(all, zs), atPath("github.com", "/Zach-Source/x"), 0},
+		{"unknown path ignores prefixes", policy(zs), host("github.com"), 0},
+		{"unknown path takes the first of equal ranks", policy(all, zs), host("github.com"), 0},
+		{"exact host still beats wildcard with a longer prefix", policy(scopedHTTPSRule("*.com", "/zach-source/"), all), atPath("github.com", "/zach-source/x"), 1},
+		{"named port beats a longer prefix on all ports", policy(&ateapipb.EgressRule{Https: &ateapipb.HTTPSRule{Hostnames: []string{"github.com"}, Ports: allPorts(), PathPrefixes: []string{"/zach-source/"}}}, httpsRuleOnPorts(ports(443), "github.com")), atPath("github.com", "/zach-source/x"), 1},
+		{"wrong port does not match", policy(zs), Destination{Hostname: "github.com", Port: 8443, Path: "/zach-source/x", HasPath: true}, -1},
+		{"other host is untouched", policy(zs, all), atPath("example.com", "/zach-source/x"), -1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mustCompile(t, tc.policy).EvaluateRequest(tc.dest, true)
+			if got.RuleIndex != tc.want || got.Allowed != (tc.want >= 0) {
+				t.Errorf("EvaluateRequest(%+v) = %+v, want rule %d", tc.dest, got, tc.want)
+			}
+		})
+	}
+}
+
+// A path a server could read differently is denied when a prefixed rule could
+// decide it, so that "/stigenai/../zach-source/" cannot take the catch-all's
+// credential.
+func TestEvaluateRequestUnsafePaths(t *testing.T) {
+	zs := scopedHTTPSRule("github.com", "/zach-source/")
+	all := httpsRule("github.com")
+	paths := []string{
+		"/stigenai/../zach-source/x",
+		"/zach-source/../stigenai/x",
+		"/stigenai/..",
+		"/stigenai/./x",
+		"/stigenai/%2e%2e/zach-source/x",
+		"/stigenai/%2E./zach-source/x",
+		"/stigenai/.%2e/zach-source/x",
+		"/stigenai%2f..%2fzach-source/x",
+		"/stigenai%2Fx",
+		"/stigenai%5cx",
+		`/stigenai\..\zach-source/x`,
+	}
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			if got := mustCompile(t, policy(all, zs)).EvaluateRequest(atPath("github.com", path), true); got.Allowed {
+				t.Errorf("EvaluateRequest(%q) = %+v, want a deny", path, got)
+			}
+		})
+	}
+	safe := []string{"/stigenai/x..y", "/stigenai/..x/y", "/stigenai/a.b/c", "/stigenai/x?p=../..", "/stigenai/x?p=%2f"}
+	for _, path := range safe {
+		t.Run("safe "+path, func(t *testing.T) {
+			if got := mustCompile(t, policy(all, zs)).EvaluateRequest(atPath("github.com", path), true); !got.Allowed || got.RuleIndex != 0 {
+				t.Errorf("EvaluateRequest(%q) = %+v, want the catch-all", path, got)
+			}
+		})
+	}
+	t.Run("without a prefixed rule the path is not inspected", func(t *testing.T) {
+		if got := mustCompile(t, policy(all)).EvaluateRequest(atPath("github.com", "/a/../b"), true); !got.Allowed {
+			t.Errorf("EvaluateRequest = %+v, want an allow", got)
+		}
+	})
+	t.Run("a prefixed rule for another host does not inspect the path", func(t *testing.T) {
+		p := policy(all, scopedHTTPSRule("example.com", "/x/"))
+		if got := mustCompile(t, p).EvaluateRequest(atPath("github.com", "/a/../b"), true); !got.Allowed {
+			t.Errorf("EvaluateRequest = %+v, want an allow", got)
+		}
+	})
+	t.Run("the connection decision does not look at paths", func(t *testing.T) {
+		if got := mustCompile(t, policy(zs)).EvaluateRequest(host("github.com"), true); !got.Allowed {
+			t.Errorf("EvaluateRequest = %+v, want an allow", got)
+		}
+	})
+}
+
+func TestCompileDropsBadPathPrefixWithoutWidening(t *testing.T) {
+	for _, prefix := range []string{"no-slash", "/zach", "/zach-source", ""} {
+		t.Run(prefix, func(t *testing.T) {
+			compiled, errs := Compile(policy(scopedHTTPSRule("github.com", prefix)))
+			if len(errs) != 1 {
+				t.Fatalf("Compile errors = %v, want 1", errs)
+			}
+			for _, path := range []string{"/anything", "/zach/x", "/zachary/x", "/zach-source/x"} {
+				if got := compiled.EvaluateRequest(atPath("github.com", path), true); got.Allowed {
+					t.Errorf("EvaluateRequest(%q) = %+v, want a deny: the rule must not widen to all paths", path, got)
+				}
+			}
+		})
+	}
+}
+
+func TestSNIRulesIncludePathScopedRules(t *testing.T) {
+	compiled := mustCompile(t, policy(scopedHTTPSRule("github.com", "/zach-source/")))
+	want := []SNIRule{{Pattern: "github.com", Mode: SNIModeMITM}}
+	if got := compiled.SNIRules(443); !slices.Equal(got, want) {
+		t.Errorf("SNIRules(443) = %v, want %v", got, want)
+	}
+}

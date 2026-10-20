@@ -133,8 +133,8 @@ func Compile(policy *ateapipb.EgressPolicy) (*Policy, []error) {
 			raw, ports, defaultPort = rule.GetHttps().GetHostnames(), rule.GetHttps().GetPorts(), defaultHTTPSPort
 			cr.pathScoped = len(rule.GetHttps().GetPathPrefixes()) > 0
 			for _, prefix := range rule.GetHttps().GetPathPrefixes() {
-				if !strings.HasPrefix(prefix, "/") {
-					errs = append(errs, fmt.Errorf("rules[%d].https.path_prefixes: %q does not start with \"/\"", i, prefix))
+				if !strings.HasPrefix(prefix, "/") || !strings.HasSuffix(prefix, "/") {
+					errs = append(errs, fmt.Errorf("rules[%d].https.path_prefixes: %q does not start and end with \"/\"", i, prefix))
 					continue
 				}
 				cr.pathPrefixes = append(cr.pathPrefixes, prefix)

@@ -82,23 +82,34 @@ func ValidateCustom_EgressPolicy_Metadata(_ context.Context, _ operation.Operati
 	return nil
 }
 
-// ValidateCustom_EgressPolicy_Rules rejects two rules that tie on a pattern,
-// a port and a path prefix, whatever their protocols: the gateway would have
-// no way to pick one. A rule with no path prefixes holds the empty prefix, so
-// it ties with another such rule but not with a prefixed one. Defaults are applied before validation, so an http rule left on 80
-// and an https rule left on 443 never tie.
+// ValidateCustom_EgressPolicy_Rules rejects two rules that tie on a pattern
+// and a port, whatever their protocols: the gateway would have no way to pick
+// one. Two https rules tie only when they also share a path prefix, and a rule
+// with no path prefixes holds the empty prefix, so it ties with another such
+// rule but not with a prefixed one. An http or tls_passthrough rule has no
+// path, so it ties with any other-protocol rule on the pattern and port.
+// Defaults are applied before validation, so an http rule left on 80 and an
+// https rule left on 443 never tie.
 func ValidateCustom_EgressPolicy_Rules(_ context.Context, _ operation.Operation, p *field.Path, rules, _ []*ateapipb.EgressRule) field.ErrorList {
-	type key struct {
+	type hostKey struct {
 		pattern string
 		port    portKey
-		prefix  string
+	}
+	type key struct {
+		hostKey
+		prefix string
 	}
 	type match struct {
 		rule int
 		path *field.Path
 	}
 	var errs field.ErrorList
-	seen := map[key]match{}
+	httpsSeen := map[key]match{}     // https rules, by prefix
+	httpsHost := map[hostKey]match{} // first https rule, whatever its prefix
+	otherHost := map[hostKey]match{} // first http or tls_passthrough rule
+	tie := func(path *field.Path, pattern string, prior match, port portKey, prefix string) *field.Error {
+		return field.Invalid(path, pattern, fmt.Sprintf("ties with %s on %s%s", prior.path, port, prefixSuffix(prefix)))
+	}
 	for i, rule := range rules {
 		member, patterns, ports, prefixes := ruleMatchFields(rule)
 		if member == "" {
@@ -107,14 +118,32 @@ func ValidateCustom_EgressPolicy_Rules(_ context.Context, _ operation.Operation,
 		for j, pattern := range patterns {
 			path := p.Index(i).Child(member, "hostnames").Index(j)
 			for _, port := range portKeysOf(ports) {
+				hk := hostKey{pattern, port}
+				cur := match{rule: i, path: path}
+				// A repeat within one rule is reported by the set check.
+				if member != "https" {
+					if prior, ok := httpsHost[hk]; ok && prior.rule != i {
+						errs = append(errs, tie(path, pattern, prior, port, ""))
+					}
+					if prior, ok := otherHost[hk]; !ok {
+						otherHost[hk] = cur
+					} else if prior.rule != i {
+						errs = append(errs, tie(path, pattern, prior, port, ""))
+					}
+					continue
+				}
+				if prior, ok := otherHost[hk]; ok && prior.rule != i {
+					errs = append(errs, tie(path, pattern, prior, port, ""))
+				}
+				if _, ok := httpsHost[hk]; !ok {
+					httpsHost[hk] = cur
+				}
 				for _, prefix := range prefixes {
-					k := key{pattern, port, prefix}
-					prior, ok := seen[k]
-					switch {
-					case !ok:
-						seen[k] = match{rule: i, path: path}
-					case prior.rule != i: // a repeat within one rule is reported by the set check
-						errs = append(errs, field.Invalid(path, pattern, fmt.Sprintf("ties with %s on %s%s", prior.path, port, prefixSuffix(prefix))))
+					k := key{hk, prefix}
+					if prior, ok := httpsSeen[k]; !ok {
+						httpsSeen[k] = cur
+					} else if prior.rule != i {
+						errs = append(errs, tie(path, pattern, prior, port, prefix))
 					}
 				}
 			}
@@ -184,12 +213,13 @@ func ValidateCustom_HTTPSRule_Hostnames(_ context.Context, _ operation.Operation
 }
 
 // Each prefix is matched against the path before any "?", so it must be an
-// absolute path with no query or fragment.
+// absolute path with no query or fragment. It ends with "/" so that "/zach/"
+// cannot match "/zachary/x".
 func ValidateCustom_HTTPSRule_PathPrefixes(_ context.Context, _ operation.Operation, p *field.Path, prefixes, _ []string) field.ErrorList {
 	var errs field.ErrorList
 	for i, prefix := range prefixes {
-		if !strings.HasPrefix(prefix, "/") || strings.ContainsAny(prefix, "?#") {
-			errs = append(errs, field.Invalid(p.Index(i), prefix, `must start with "/" and contain no "?" or "#"`))
+		if !strings.HasPrefix(prefix, "/") || !strings.HasSuffix(prefix, "/") || strings.ContainsAny(prefix, "?#") {
+			errs = append(errs, field.Invalid(p.Index(i), prefix, `must start and end with "/" and contain no "?" or "#"`))
 		}
 	}
 	return errs

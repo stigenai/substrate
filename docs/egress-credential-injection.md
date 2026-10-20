@@ -121,13 +121,19 @@ rules:
         credentialUri: ate-secret://k8s.io/default/ns1/github/basic
 ```
 
-A request matches a prefix when its path, before any `?`, starts with it. No
-escape is decoded. The longest matching prefix decides. A request whose path
+Each prefix must start and end with `/`. A request matches a prefix when its
+path, before any `?`, starts with it. No escape is decoded, and the match is
+case sensitive. The longest matching prefix decides. A request whose path
 has a `.` or `..` segment, an encoded dot, an encoded slash or a backslash is
 denied when a rule with prefixes covers its host and port, because the origin
 could read it as a different path. Rules for one host and port must not share
 a prefix. The TLS connection is allowed when any `https` rule covers its
 server name, so a path that no rule covers is denied per request.
+
+Path prefixes select which credential is sent. They are not an authorization
+boundary: the rule with no prefixes must not hold a credential broader than a
+scoped one. Roll out in this order: ateapi, then atenet, then clients. An old
+atenet ignores `pathPrefixes` and widens the rule to all paths.
 
 ## What the gateway does
 

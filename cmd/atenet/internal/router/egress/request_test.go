@@ -480,3 +480,34 @@ func TestMITMLegPicksCredentialByPath(t *testing.T) {
 		})
 	}
 }
+
+// A wildcard host with path prefixes picks its credential by path like an
+// exact host does.
+func TestMITMLegPicksCredentialByPathUnderWildcardHost(t *testing.T) {
+	rule := func(uri string, prefixes ...string) *ateapipb.EgressRule {
+		return &ateapipb.EgressRule{Https: &ateapipb.HTTPSRule{
+			Hostnames:    []string{"*.example.com"},
+			PathPrefixes: prefixes,
+			Effects: &ateapipb.HttpRuleEffects{ReplaceHeaders: []*ateapipb.CredentialHeader{{
+				Header: "authorization", Prefix: "Basic ", CredentialUri: uri,
+			}}},
+		}}
+	}
+	rules := []*ateapipb.EgressRule{rule("ate-secret://k8s/default/catchall"), rule("ate-secret://k8s/default/scoped", "/zach-source/")}
+	for path, wantURI := range map[string]string{
+		"/zach-source/x.git/info/refs": "ate-secret://k8s/default/scoped",
+		"/zach-sourcery/x":             "ate-secret://k8s/default/catchall",
+		"/stigenai/x":                  "ate-secret://k8s/default/catchall",
+	} {
+		t.Run(path, func(t *testing.T) {
+			provider := &fakeProvider{resp: bearerTokenResponse("tok")}
+			h := injectionHandlerFor(&ateapipb.EgressPolicy{Rules: rules}, provider, injectionProviderName)
+			md := innerMetadataAt(extproc.EgressTLSMITMFilterChainName, "GET", "api.example.com", path, nil)
+			res, err := h.HandleRequestHeaders(context.Background(), md)
+			wantAllowed(t, res, err)
+			if got := provider.got.GetUri(); got != wantURI {
+				t.Errorf("credential URI = %q, want %q", got, wantURI)
+			}
+		})
+	}
+}

@@ -502,6 +502,10 @@ func TestEvaluateRequestPathPrefixes(t *testing.T) {
 		{"no match among scoped rules denies", policy(zs, nested), atPath("github.com", "/stigenai/x"), -1},
 		{"query is not part of the path", policy(all, zs), atPath("github.com", "/stigenai/x?next=/zach-source/"), 0},
 		{"prefix is matched as a prefix, not a segment", policy(all, zs), atPath("github.com", "/zach-source-evil/x"), 0},
+		{"prefix is not an owner name prefix", policy(all, zs), atPath("github.com", "/zach-sourcery/x"), 0},
+		{"a semicolon after dot-dot is not a dot segment", policy(all, zs), atPath("github.com", "/zach-source/..;/x"), 1},
+		{"a doubled leading slash is another path", policy(all, zs), atPath("github.com", "//zach-source/x"), 0},
+		{"git smart HTTP POST takes the scoped rule", policy(all, scopedHTTPSRule("github.com", "/o/")), atPath("github.com", "/o/r.git/git-upload-pack"), 1},
 		{"empty path matches no prefix", policy(all, zs), atPath("github.com", ""), 0},
 		{"empty path under only scoped rules denies", policy(zs), atPath("github.com", ""), -1},
 		{"prefixes are case sensitive", policy(all, zs), atPath("github.com", "/Zach-Source/x"), 0},
@@ -575,12 +579,18 @@ func TestEvaluateRequestUnsafePaths(t *testing.T) {
 }
 
 func TestCompileDropsBadPathPrefixWithoutWidening(t *testing.T) {
-	compiled, errs := Compile(policy(scopedHTTPSRule("github.com", "no-slash")))
-	if len(errs) != 1 {
-		t.Fatalf("Compile errors = %v, want 1", errs)
-	}
-	if got := compiled.EvaluateRequest(atPath("github.com", "/anything"), true); got.Allowed {
-		t.Errorf("EvaluateRequest = %+v, want a deny: the rule must not widen to all paths", got)
+	for _, prefix := range []string{"no-slash", "/zach", "/zach-source", ""} {
+		t.Run(prefix, func(t *testing.T) {
+			compiled, errs := Compile(policy(scopedHTTPSRule("github.com", prefix)))
+			if len(errs) != 1 {
+				t.Fatalf("Compile errors = %v, want 1", errs)
+			}
+			for _, path := range []string{"/anything", "/zach/x", "/zachary/x", "/zach-source/x"} {
+				if got := compiled.EvaluateRequest(atPath("github.com", path), true); got.Allowed {
+					t.Errorf("EvaluateRequest(%q) = %+v, want a deny: the rule must not widen to all paths", path, got)
+				}
+			}
+		})
 	}
 }
 

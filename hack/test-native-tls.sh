@@ -26,10 +26,15 @@ docker build --platform linux/amd64 --iidfile "$test_dir/image" \
 	-f cmd/dataplane/envoy/Dockerfile cmd/dataplane/envoy
 GOMAXPROCS=2 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go test -p=2 -c -tags=native_tls_integration \
 	-o "$test_dir/native-tls.test" ./cmd/atenet/internal/router/egress
+GOMAXPROCS=2 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go test -p=2 -c -tags=native_tls_integration \
+	-o "$test_dir/router.test" ./cmd/atenet/internal/router
 docker run --rm --network none --cap-drop ALL --read-only --tmpfs /tmp \
 	-e SUBSTRATE_NATIVE_TLS_ENVOY=/usr/local/bin/envoy \
 	-e SUBSTRATE_EGRESS_MANIFESTS=/manifests \
 	-v "$PWD/manifests/ate-install:/manifests:ro" \
 	-v "$test_dir/native-tls.test:/native-tls.test:ro" \
-	--entrypoint /native-tls.test "$(cat "$test_dir/image")" \
-	-test.run '^(TestNativeTLSEnvoy|TestEgressConnectAuthorityPerTunnel)$' -test.v -test.timeout 60s
+	-v "$test_dir/router.test:/router.test:ro" \
+	--entrypoint /bin/sh "$(cat "$test_dir/image")" -ec '
+/native-tls.test -test.run "^(TestNativeTLSEnvoy|TestEgressConnectAuthorityPerTunnel)\$" -test.v -test.timeout 60s
+/router.test -test.run "^TestIngressConnectTunnelsKeepTheirOwnTarget\$" -test.v -test.timeout 60s'
+

@@ -38,6 +38,7 @@ import (
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	listenerv3 "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	routev3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
+	setfilterstatecommonv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/common/set_filter_state/v3"
 	setfilterstatev3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/set_filter_state/v3"
 	hcmv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	tlsv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
@@ -53,6 +54,7 @@ import (
 )
 
 func TestActorRoutingFilterStateFilter(t *testing.T) {
+	const poolKey = "envoy.network.upstream_server_name"
 	for _, tc := range []struct {
 		name             string
 		captureAuthority bool
@@ -70,6 +72,7 @@ func TestActorRoutingFilterStateFilter(t *testing.T) {
 			want: map[string]string{
 				extproc.TargetActorFilterStateKey:      "%REQ(ate-target-actor)%",
 				extproc.ConnectAuthorityFilterStateKey: "%REQ(:authority)%",
+				poolKey:                                "%REQ(ate-target-actor)% %REQ(:authority)%",
 			},
 		},
 	} {
@@ -89,7 +92,10 @@ func TestActorRoutingFilterStateFilter(t *testing.T) {
 				if format != tc.want[key] {
 					t.Errorf("capture %q = %q, want %q", key, format, tc.want[key])
 				}
-				if key != extproc.ConnectAuthorityFilterStateKey && strings.Contains(strings.ToLower(format), ":authority") {
+				if key == poolKey && value.GetSharedWithUpstream() != setfilterstatecommonv3.FilterStateValue_NONE {
+					t.Errorf("%q is shared with upstream; it would override the SNI", key)
+				}
+				if key != extproc.ConnectAuthorityFilterStateKey && key != poolKey && strings.Contains(strings.ToLower(format), ":authority") {
 					t.Errorf("capture %q derives actor routing from authority", key)
 				}
 			}

@@ -916,8 +916,14 @@ func (x *XdsServer) buildMainInternalListener() *listenerv3.Listener {
 
 // actorRoutingFilterStateFilter captures the actor routing header so
 // main_internal can read it across the CONNECT internal-listener hop.
+// With captureAuthority it also keys the hop's connection pool per target
+// actor and CONNECT authority. Envoy does not hash string filter state into the
+// pool key, and every connection in a pool gets the filter state of the tunnel
+// that made the pool. Without the key, a tunnel could reach another tunnel's
+// actor and port. The authority has no space, so it comes last and no two
+// pairs make the same key. The key is not shared upstream.
 func actorRoutingFilterStateFilter(captureAuthority bool) *hcmv3.HttpFilter {
-	values := make([]*setfilterstatecommonv3.FilterStateValue, 0, 2)
+	values := make([]*setfilterstatecommonv3.FilterStateValue, 0, 3)
 	routingFields := []struct{ key, header string }{
 		{extproc.TargetActorFilterStateKey, atenet.TargetActorHeader},
 	}
@@ -944,6 +950,26 @@ func actorRoutingFilterStateFilter(captureAuthority bool) *hcmv3.HttpFilter {
 				},
 			},
 			SharedWithUpstream: setfilterstatecommonv3.FilterStateValue_ONCE,
+		})
+	}
+	if captureAuthority {
+		values = append(values, &setfilterstatecommonv3.FilterStateValue{
+			Key: &setfilterstatecommonv3.FilterStateValue_ObjectKey{
+				ObjectKey: "envoy.network.upstream_server_name",
+			},
+			SkipIfEmpty: true,
+			Value: &setfilterstatecommonv3.FilterStateValue_FormatString{
+				FormatString: &corev3.SubstitutionFormatString{
+					Format: &corev3.SubstitutionFormatString_TextFormatSource{
+						TextFormatSource: &corev3.DataSource{
+							Specifier: &corev3.DataSource_InlineString{
+								InlineString: "%REQ(" + atenet.TargetActorHeader + ")% %REQ(" + extproc.AuthorityHeader + ")%",
+							},
+						},
+					},
+					OmitEmptyValues: true,
+				},
+			},
 		})
 	}
 	return &hcmv3.HttpFilter{

@@ -428,11 +428,15 @@ func TestEgressManifestsOriginalDstClustersDialTheFilterStateAlone(t *testing.T)
 // The identity crosses the inner hop as filter state, which internal_upstream
 // copies from the options the connection pool was created with. A string
 // object is not part of the pool key, so the outer HCM keys the pool per actor
-// itself, and must not share that key upstream as an SNI override.
+// itself, and must not share that key upstream as an SNI override. Pool members
+// take the filter state of the tunnel that made the pool, so the key must hold
+// the CONNECT authority too: the actor's SAN, one space, then the authority. When
+// the chain shares a policy, a space and the policy follow. A URI SAN and an
+// IP:port have no space, so no two tuples make the same key.
 func TestEgressManifestsKeyTheInnerPoolPerActor(t *testing.T) {
 	for _, path := range egressManifests {
 		t.Run(path, func(t *testing.T) {
-			var identity, authority, poolKey node
+			var identity, authority, poolKey, policy node
 			for _, f := range list(hcm(outerChain(t, bootstrapTree(t, path))), "http_filters") {
 				if str(f, "name") != setFilterStateFilter {
 					continue
@@ -445,6 +449,8 @@ func TestEgressManifestsKeyTheInnerPoolPerActor(t *testing.T) {
 						authority = v
 					case "envoy.network.upstream_server_name":
 						poolKey = v
+					case "dev.ate.policy.egress":
+						policy = v
 					}
 				}
 			}
@@ -468,8 +474,14 @@ func TestEgressManifestsKeyTheInnerPoolPerActor(t *testing.T) {
 			if str(poolKey, "shared_with_upstream") != "" {
 				t.Error("envoy.network.upstream_server_name must not be shared with upstream; it would override the SNI of re-originated TLS")
 			}
-			if !strings.Contains(mustJSON(t, poolKey), "DOWNSTREAM_PEER_URI_SAN") {
-				t.Error("the pool key must derive from the verified peer certificate")
+			wantKey := "%DOWNSTREAM_PEER_URI_SAN% %REQ(:AUTHORITY)%"
+			if policy != nil {
+				// The module reads the policy from the connection the pool made, so
+				// a tunnel with other rules needs another pool.
+				wantKey += " %DYNAMIC_METADATA(dev.ate.policy.egress)%"
+			}
+			if got := str(child(child(poolKey, "format_string"), "text_format_source"), "inline_string"); got != wantKey {
+				t.Errorf("the pool key is %q, want %q: the verified peer SAN, the CONNECT authority, then the policy when the chain shares one", got, wantKey)
 			}
 		})
 	}

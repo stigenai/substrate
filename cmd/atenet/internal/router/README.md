@@ -130,7 +130,7 @@ a request are declared once, in `extproc/attributes.go`.
 | --- | --- | --- |
 | `dev.ate.actor.name` | ingress | carries the actor name across CONNECT re-entry |
 | `dev.ate.actor.atespace` | ingress | carries the atespace across CONNECT re-entry |
-| `dev.ate.connect.authority` | ingress, egress | carries the outer CONNECT authority across re-entry: target-port selection on ingress, the dialed port the request legs match `ports` against on egress |
+| `dev.ate.connect.authority` | ingress, egress | carries the outer CONNECT authority across re-entry: target-port selection on ingress, the dialed port the request legs match `ports` against on egress. The egress outer chain also puts it in `envoy.network.upstream_server_name`, after the peer SAN, so each tunnel gets its own inner pool and its own value |
 | `dev.ate.actor.identity` | egress | carries the authenticated actor identity to the policy ext_proc, the logs and additional ext_proc services |
 | `dev.ate.egress:passthrough_destination` | egress | dynamic metadata: the CONNECT leg's answer, the dialed address a `tls_passthrough` rule allowed, copied into the ORIGINAL_DST filter state |
 | `dev.ate.egress:dial` | egress | dynamic metadata: a request leg's answer, `name` or `address`, which picks the route |

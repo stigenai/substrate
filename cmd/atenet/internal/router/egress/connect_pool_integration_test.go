@@ -113,12 +113,19 @@ func TestEgressConnectAuthorityPerTunnel(t *testing.T) {
 	}
 }
 
-func pool(t *testing.T, m tree) (setState, cluster any) {
+// pool returns the egress listener's first set_filter_state filter and the
+// cluster its CONNECT route sends tunnels to, with the name of the internal
+// listener that cluster dials.
+func pool(t *testing.T, m tree) (setState, cluster any, listener string) {
+	t.Helper()
+	var name string
 	for _, l := range at(t, m, "static_resources", "listeners").([]any) {
 		if l.(tree)["name"] != "egress" {
 			continue
 		}
-		for _, f := range at(t, l, "filter_chains", 0, "filters", 0, "typed_config", "http_filters").([]any) {
+		hcm := at(t, l, "filter_chains", 0, "filters", 0, "typed_config")
+		name = at(t, hcm, "route_config", "virtual_hosts", 0, "routes", 0, "route", "cluster").(string)
+		for _, f := range at(t, hcm, "http_filters").([]any) {
 			if f.(tree)["name"] == "envoy.filters.http.set_filter_state" {
 				setState = f
 				break
@@ -126,17 +133,18 @@ func pool(t *testing.T, m tree) (setState, cluster any) {
 		}
 	}
 	for _, c := range at(t, m, "static_resources", "clusters").([]any) {
-		if c.(tree)["name"] == "inner_internal" {
+		if c.(tree)["name"] == name {
 			cluster = c
 		}
 	}
 	if setState == nil || cluster == nil {
-		t.Fatal("manifest lacks the first set_filter_state filter or the inner_internal cluster")
+		t.Fatal("manifest lacks the first set_filter_state filter or the CONNECT route's cluster")
 	}
-	return setState, cluster
+	listener = at(t, cluster, "load_assignment", "endpoints", 0, "lb_endpoints", 0, "endpoint", "address", "envoy_internal_address", "server_listener_name").(string)
+	return setState, cluster, listener
 }
 
-func connectPoolConfig(setState, cluster any, dir string, port int) tree {
+func connectPoolConfig(setState, cluster any, clusterName, listener, dir string, port int) tree {
 	header := func(name, state string) tree {
 		return tree{"header": tree{"key": name, "value": "%FILTER_STATE(" + state + ":PLAIN)%"}}
 	}
@@ -167,14 +175,14 @@ func connectPoolConfig(setState, cluster any, dir string, port int) tree {
 							"upgrade_configs": []any{tree{"upgrade_type": "CONNECT"}},
 							"route_config": tree{"name": "connect_route", "virtual_hosts": []any{tree{"name": "connect", "domains": []any{"*"}, "routes": []any{tree{
 								"match": tree{"connect_matcher": tree{}},
-								"route": tree{"cluster": "inner_internal", "timeout": "0s", "upgrade_configs": []any{tree{"upgrade_type": "CONNECT", "connect_config": tree{}}}},
+								"route": tree{"cluster": clusterName, "timeout": "0s", "upgrade_configs": []any{tree{"upgrade_type": "CONNECT", "connect_config": tree{}}}},
 							}}}}},
 							"http_filters": []any{setState, router},
 						}}},
 					}},
 				},
 				tree{
-					"name":              "inner_listener",
+					"name":              listener,
 					"internal_listener": tree{},
 					"filter_chains": []any{tree{"filters": []any{tree{"name": "envoy.filters.network.http_connection_manager", "typed_config": tree{
 						"@type":       hcm,
@@ -193,7 +201,7 @@ func connectPoolConfig(setState, cluster any, dir string, port int) tree {
 }
 
 func runConnectPool(t *testing.T, binary, path string) {
-	setState, cluster := pool(t, manifestEnvoy(t, path))
+	setState, cluster, listener := pool(t, manifestEnvoy(t, path))
 	ca := newTestCA(t, "actor-ca")
 	dir := t.TempDir()
 	writeTLSBundle(t, dir, "gateway", nativeTLSCert(t, ca, "localhost", nil))
@@ -205,7 +213,7 @@ func runConnectPool(t *testing.T, binary, path string) {
 		actors[name] = nativeTLSCert(t, ca, "localhost", &substratex509.ActorIdentity{Atespace: "foo", ActorName: name, ActorUid: testEgressActorUID})
 	}
 	port := freeNativeTLSPort(t)
-	body, err := json.Marshal(connectPoolConfig(setState, cluster, dir, port))
+	body, err := json.Marshal(connectPoolConfig(setState, cluster, cluster.(tree)["name"].(string), listener, dir, port))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -165,16 +165,20 @@ data:
                       text_format_source:
                         inline_string: "%REQ(:AUTHORITY)%"
                       omit_empty_values: true
-                  # Keys the inner hop's connection pool per actor. Filter state is not
-                  # part of the pool key, so without this two actors dialing the same
-                  # IP:port would share a pool and the second would arrive on the inner
-                  # listener as the first. Not shared upstream, so it never acts as an
-                  # SNI override.
+                  # Keys the inner hop's connection pool per actor and per CONNECT
+                  # authority. Filter state is not part of the pool key, and every
+                  # connection in a pool gets the filter state of the tunnel that made
+                  # the pool. Without the SAN, two actors dialing the same IP:port
+                  # would share a pool. Without the authority, one actor's tunnels to
+                  # two ports would share one, and the request legs would check a
+                  # Host against the wrong dialed port. A URI SAN has no space, so no
+                  # two pairs make the same key. Not shared upstream, so it never acts
+                  # as an SNI override.
                   - object_key: envoy.network.upstream_server_name
                     skip_if_empty: true
                     format_string:
                       text_format_source:
-                        inline_string: "%DOWNSTREAM_PEER_URI_SAN%"
+                        inline_string: "%DOWNSTREAM_PEER_URI_SAN% %REQ(:AUTHORITY)%"
                       omit_empty_values: true
               # The CONNECT leg. The sidecar authenticates the actor from its
               # certificate and decides the tls_passthrough rules against the

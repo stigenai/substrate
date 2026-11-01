@@ -615,6 +615,39 @@ func TestEgressManifestsRequestLegsRouteByTheDial(t *testing.T) {
 	}
 }
 
+// Envoy keeps one upstream TLS session cache per cluster and offers its newest
+// session to any SNI. An origin that accepts a ticket across SNI then answers
+// with the other host's certificate, and the SAN check fails with a 503. Every
+// cluster that takes its SNI from the Host must therefore turn resumption off.
+func TestEgressManifestsDisableUpstreamSessionResumption(t *testing.T) {
+	want := map[string][]string{
+		egressManifests[0]: nil,
+		egressManifests[1]: {
+			"egress_forward_proxy", "egress_forward_proxy_grpc",
+			"egress_original_dst_tls", "egress_original_dst_tls_grpc",
+		},
+	}
+	for _, path := range egressManifests {
+		t.Run(path, func(t *testing.T) {
+			var got []string
+			for _, cluster := range clusters(bootstrapTree(t, path)) {
+				tc := child(child(cluster, "transport_socket"), "typed_config")
+				if !strings.HasSuffix(str(tc, "@type"), "UpstreamTlsContext") || !autoSNIAndSAN(cluster) {
+					continue
+				}
+				got = append(got, str(cluster, "name"))
+				if v, ok := tc["max_session_keys"].(float64); !ok || v != 0 {
+					t.Errorf("cluster %q has max_session_keys %v, want 0: Envoy would offer one host's TLS session to another", str(cluster, "name"), tc["max_session_keys"])
+				}
+			}
+			slices.Sort(got)
+			if !slices.Equal(got, want[path]) {
+				t.Errorf("auto_sni TLS clusters = %v, want %v", got, want[path])
+			}
+		})
+	}
+}
+
 func mustJSON(t *testing.T, n node) string {
 	t.Helper()
 	b, err := yaml.Marshal(n)

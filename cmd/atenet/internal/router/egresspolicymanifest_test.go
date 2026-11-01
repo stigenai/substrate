@@ -428,7 +428,10 @@ func TestEgressManifestsOriginalDstClustersDialTheFilterStateAlone(t *testing.T)
 // The identity crosses the inner hop as filter state, which internal_upstream
 // copies from the options the connection pool was created with. A string
 // object is not part of the pool key, so the outer HCM keys the pool per actor
-// itself, and must not share that key upstream as an SNI override.
+// itself, and must not share that key upstream as an SNI override. Pool members
+// take the filter state of the tunnel that made the pool, so the key must hold
+// the CONNECT authority too: the actor's SAN, one space, then the authority. A
+// URI SAN has no space, so no two pairs make the same key.
 func TestEgressManifestsKeyTheInnerPoolPerActor(t *testing.T) {
 	for _, path := range egressManifests {
 		t.Run(path, func(t *testing.T) {
@@ -468,8 +471,9 @@ func TestEgressManifestsKeyTheInnerPoolPerActor(t *testing.T) {
 			if str(poolKey, "shared_with_upstream") != "" {
 				t.Error("envoy.network.upstream_server_name must not be shared with upstream; it would override the SNI of re-originated TLS")
 			}
-			if !strings.Contains(mustJSON(t, poolKey), "DOWNSTREAM_PEER_URI_SAN") {
-				t.Error("the pool key must derive from the verified peer certificate")
+			const wantKey = "%DOWNSTREAM_PEER_URI_SAN% %REQ(:AUTHORITY)%"
+			if got := str(child(child(poolKey, "format_string"), "text_format_source"), "inline_string"); got != wantKey {
+				t.Errorf("the pool key is %q, want %q: the verified peer SAN, then the CONNECT authority", got, wantKey)
 			}
 		})
 	}

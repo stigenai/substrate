@@ -28,6 +28,8 @@ GOMAXPROCS=2 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go test -p=2 -c -tags=native_
 	-o "$test_dir/native-tls.test" ./cmd/atenet/internal/router/egress
 docker run --rm --network none --cap-drop ALL --read-only --tmpfs /tmp \
 	-e SUBSTRATE_NATIVE_TLS_ENVOY=/usr/local/bin/envoy \
+	-e SUBSTRATE_EGRESS_MANIFESTS=/manifests \
+	-v "$PWD/manifests/ate-install:/manifests:ro" \
 	-v "$test_dir/native-tls.test:/native-tls.test:ro" \
 	--entrypoint /native-tls.test "$(cat "$test_dir/image")" \
-	-test.run '^TestNativeTLSEnvoy$' -test.v -test.timeout 60s
+	-test.run '^(TestNativeTLSEnvoy|TestEgressConnectAuthorityPerTunnel)$' -test.v -test.timeout 60s

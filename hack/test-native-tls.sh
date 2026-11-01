@@ -29,12 +29,14 @@ GOMAXPROCS=2 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go test -p=2 -c -tags=native_
 GOMAXPROCS=2 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go test -p=2 -c -tags=native_tls_integration \
 	-o "$test_dir/router.test" ./cmd/atenet/internal/router
 docker run --rm --network none --cap-drop ALL --read-only --tmpfs /tmp \
+	--add-host api.test:127.0.0.1 --add-host chat.test:127.0.0.1 \
 	-e SUBSTRATE_NATIVE_TLS_ENVOY=/usr/local/bin/envoy \
+	-e SUBSTRATE_EGRESS_MANIFEST=/atenet-egress-with-sdsmint.yaml \
+	-v "$PWD/manifests/ate-install/atenet-egress-with-sdsmint.yaml:/atenet-egress-with-sdsmint.yaml:ro" \
 	-e SUBSTRATE_EGRESS_MANIFESTS=/manifests \
 	-v "$PWD/manifests/ate-install:/manifests:ro" \
 	-v "$test_dir/native-tls.test:/native-tls.test:ro" \
 	-v "$test_dir/router.test:/router.test:ro" \
 	--entrypoint /bin/sh "$(cat "$test_dir/image")" -ec '
-/native-tls.test -test.run "^(TestNativeTLSEnvoy|TestEgressConnectAuthorityPerTunnel)\$" -test.v -test.timeout 60s
+/native-tls.test -test.run "^(TestNativeTLSEnvoy|TestEgressUpstreamSessionPerSNI|TestEgressConnectAuthorityPerTunnel)\$" -test.v -test.timeout 60s
 /router.test -test.run "^TestIngressConnectTunnelsKeepTheirOwnTarget\$" -test.v -test.timeout 60s'
-

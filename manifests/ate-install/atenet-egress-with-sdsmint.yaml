@@ -870,10 +870,15 @@ data:
               auto_san_validation: true
             explicit_http_config:
               http_protocol_options: {}
+        # max_session_keys: 0 turns off session resumption. Envoy keeps one
+        # session cache per cluster and offers its newest session to any SNI. An
+        # origin that accepts the ticket across SNI then answers with the other
+        # host's certificate, and the SAN check fails with a 503.
         transport_socket:
           name: envoy.transport_sockets.tls
           typed_config:
             "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+            max_session_keys: 0
             common_tls_context:
               validation_context:
                 trusted_ca:
@@ -902,6 +907,7 @@ data:
           name: envoy.transport_sockets.tls
           typed_config:
             "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+            max_session_keys: 0
             common_tls_context:
               validation_context:
                 trusted_ca:
@@ -961,6 +967,7 @@ data:
           name: envoy.transport_sockets.tls
           typed_config:
             "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+            max_session_keys: 0
             common_tls_context:
               validation_context:
                 trusted_ca:
@@ -983,6 +990,7 @@ data:
           name: envoy.transport_sockets.tls
           typed_config:
             "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+            max_session_keys: 0
             common_tls_context:
               validation_context:
                 trusted_ca:

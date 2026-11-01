@@ -108,7 +108,9 @@ the inner listener. Because Envoy keys its connection pools without string
 filter-state objects, the outer chain also sets
 `envoy.network.upstream_server_name` from the same certificate — not shared
 upstream — so the inner hop's pool is per actor and two actors dialing the same
-address never inherit each other's identity. Nothing inside the tunnel can
+address never inherit each other's identity. The key also holds the CONNECT
+authority and, on the sdsmint gateway, the policy, so a tunnel never inherits
+another tunnel's port or rules. Nothing inside the tunnel can
 write any of this; a callout without an identity is refused.
 
 Policies are read through a per-actor cache (`--egress-policy-cache-ttl`, 10s

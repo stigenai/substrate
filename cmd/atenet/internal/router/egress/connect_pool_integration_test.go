@@ -113,10 +113,10 @@ func TestEgressConnectAuthorityPerTunnel(t *testing.T) {
 	}
 }
 
-// pool returns the egress listener's first set_filter_state filter and the
-// cluster its CONNECT route sends tunnels to, with the name of the internal
+// pool returns the egress listener's set_filter_state filters, in order, and
+// the cluster its CONNECT route sends tunnels to, with the name of the internal
 // listener that cluster dials.
-func pool(t *testing.T, m tree) (setState, cluster any, listener string) {
+func pool(t *testing.T, m tree) (setState []any, cluster any, listener string) {
 	t.Helper()
 	var name string
 	for _, l := range at(t, m, "static_resources", "listeners").([]any) {
@@ -127,8 +127,7 @@ func pool(t *testing.T, m tree) (setState, cluster any, listener string) {
 		name = at(t, hcm, "route_config", "virtual_hosts", 0, "routes", 0, "route", "cluster").(string)
 		for _, f := range at(t, hcm, "http_filters").([]any) {
 			if f.(tree)["name"] == "envoy.filters.http.set_filter_state" {
-				setState = f
-				break
+				setState = append(setState, f)
 			}
 		}
 	}
@@ -138,17 +137,27 @@ func pool(t *testing.T, m tree) (setState, cluster any, listener string) {
 		}
 	}
 	if setState == nil || cluster == nil {
-		t.Fatal("manifest lacks the first set_filter_state filter or the CONNECT route's cluster")
+		t.Fatal("manifest lacks a set_filter_state filter or the CONNECT route's cluster")
 	}
 	listener = at(t, cluster, "load_assignment", "endpoints", 0, "lb_endpoints", 0, "endpoint", "address", "envoy_internal_address", "server_listener_name").(string)
 	return setState, cluster, listener
 }
 
-func connectPoolConfig(setState, cluster any, clusterName, listener, dir string, port int) tree {
+func connectPoolConfig(setState []any, cluster any, clusterName, listener, dir string, port int) tree {
 	header := func(name, state string) tree {
 		return tree{"header": tree{"key": name, "value": "%FILTER_STATE(" + state + ":PLAIN)%"}}
 	}
 	hcm := "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager"
+	// Stands in for ext_proc: the per-tunnel policy and passthrough address
+	// arrive as request headers and become the dynamic metadata the manifest's
+	// set_filter_state filters read.
+	toMetadata := tree{"name": "envoy.filters.http.header_to_metadata", "typed_config": tree{
+		"@type": "type.googleapis.com/envoy.extensions.filters.http.header_to_metadata.v3.Config",
+		"request_rules": []any{
+			tree{"header": "x-policy", "on_header_present": tree{"metadata_namespace": "dev.ate.policy.egress", "key": "p", "type": "STRING"}},
+			tree{"header": "x-passthrough", "on_header_present": tree{"metadata_namespace": "dev.ate.egress", "key": "passthrough_destination", "type": "STRING"}},
+		},
+	}}
 	router := tree{"name": "envoy.filters.http.router", "typed_config": tree{"@type": "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router"}}
 	return tree{
 		"bootstrap_extensions": []any{tree{"name": "envoy.bootstrap.internal_listener", "typed_config": tree{"@type": "type.googleapis.com/envoy.extensions.bootstrap.internal_listener.v3.InternalListener"}}},
@@ -177,7 +186,7 @@ func connectPoolConfig(setState, cluster any, clusterName, listener, dir string,
 								"match": tree{"connect_matcher": tree{}},
 								"route": tree{"cluster": clusterName, "timeout": "0s", "upgrade_configs": []any{tree{"upgrade_type": "CONNECT", "connect_config": tree{}}}},
 							}}}}},
-							"http_filters": []any{setState, router},
+							"http_filters": append(append([]any{toMetadata}, setState...), router),
 						}}},
 					}},
 				},
@@ -190,7 +199,7 @@ func connectPoolConfig(setState, cluster any, clusterName, listener, dir string,
 						"route_config": tree{"name": "inner", "virtual_hosts": []any{tree{"name": "inner", "domains": []any{"*"}, "routes": []any{tree{
 							"match":                   tree{"prefix": "/"},
 							"direct_response":         tree{"status": 200},
-							"response_headers_to_add": []any{header("x-connect-authority", "dev.ate.connect.authority"), header("x-actor", "dev.ate.actor.identity")},
+							"response_headers_to_add": []any{header("x-connect-authority", "dev.ate.connect.authority"), header("x-actor", "dev.ate.actor.identity"), header("x-policy", "dev.ate.policy.egress"), header("x-dst", "envoy.network.transport_socket.original_dst_address")},
 						}}}}},
 						"http_filters": []any{router},
 					}}}}},
@@ -202,6 +211,11 @@ func connectPoolConfig(setState, cluster any, clusterName, listener, dir string,
 
 func runConnectPool(t *testing.T, binary, path string) {
 	setState, cluster, listener := pool(t, manifestEnvoy(t, path))
+	stateJSON, err := json.Marshal(setState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasPolicy := strings.Contains(string(stateJSON), "dev.ate.policy.egress")
 	ca := newTestCA(t, "actor-ca")
 	dir := t.TempDir()
 	writeTLSBundle(t, dir, "gateway", nativeTLSCert(t, ca, "localhost", nil))
@@ -248,31 +262,33 @@ func runConnectPool(t *testing.T, binary, path string) {
 	}
 
 	type tunnel struct {
-		actor, authority string
-		conn             *tls.Conn
-		br               *bufio.Reader
+		actor, authority, policy, dst string
+		conn                          *tls.Conn
+		br                            *bufio.Reader
 	}
 	var tunnels []*tunnel
-	open := func(actor, authority string) {
+	open := func(actor, authority, policy, dst string) {
 		c, err := tls.Dial("tcp", address, &tls.Config{Certificates: []tls.Certificate{actors[actor]}, InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}) //nolint:gosec // the test gateway cert is self-issued
 		if err != nil {
 			t.Fatal(err)
 		}
 		_ = c.SetDeadline(time.Now().Add(30 * time.Second))
-		_, _ = fmt.Fprintf(c, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", authority, authority)
+		_, _ = fmt.Fprintf(c, "CONNECT %s HTTP/1.1\r\nHost: %s\r\nx-policy: %s\r\nx-passthrough: %s\r\n\r\n", authority, authority, policy, dst)
 		br := bufio.NewReader(c)
 		resp, err := http.ReadResponse(br, nil)
 		if err != nil || resp.StatusCode != 200 {
 			t.Fatalf("CONNECT %s: %v %v", authority, resp, err)
 		}
-		tunnels = append(tunnels, &tunnel{actor, authority, c, br})
+		tunnels = append(tunnels, &tunnel{actor, authority, policy, dst, c, br})
 	}
-	// Actor a alternates between two ports; b dials one. All stay open.
+	// Actor a alternates between two ports, and within a port between two
+	// policies and two passthrough addresses; b dials one port. All stay open.
 	for i := 0; i < 32; i++ {
-		open("a", []string{"192.0.2.10:8080", "192.0.2.10:443"}[i%2])
+		open("a", []string{"192.0.2.10:8080", "192.0.2.10:443"}[i%2],
+			fmt.Sprintf("policy-%d", i/2%2), fmt.Sprintf("192.0.2.%d:9000", 77+i/4%2))
 	}
 	for i := 0; i < 8; i++ {
-		open("b", "192.0.2.10:8080")
+		open("b", "192.0.2.10:8080", "policy-b", "192.0.2.99:9000")
 	}
 	wrong := 0
 	for _, tn := range tunnels {
@@ -282,9 +298,14 @@ func runConnectPool(t *testing.T, binary, path string) {
 			t.Fatal(err)
 		}
 		gotAuthority, gotActor := resp.Header.Get("x-connect-authority"), resp.Header.Get("x-actor")
-		if gotAuthority != tn.authority || !strings.HasSuffix(gotActor, "/"+tn.actor) {
+		gotPolicy, gotDst := resp.Header.Get("x-policy"), resp.Header.Get("x-dst")
+		// Only the manifest that sets these carries them.
+		policyOK := !hasPolicy || strings.Contains(gotPolicy, `"`+tn.policy+`"`)
+		dstOK := !hasPolicy || gotDst == tn.dst
+		if gotAuthority != tn.authority || !strings.HasSuffix(gotActor, "/"+tn.actor) || !policyOK || !dstOK {
 			wrong++
-			t.Errorf("actor %s tunnel to %s reached the inner listener as authority %q, actor %q", tn.actor, tn.authority, gotAuthority, gotActor)
+			t.Errorf("actor %s tunnel to %s (policy %s, address %s) reached the inner listener as authority %q, actor %q, policy %q, address %q",
+				tn.actor, tn.authority, tn.policy, tn.dst, gotAuthority, gotActor, gotPolicy, gotDst)
 		}
 		_ = tn.conn.Close()
 	}

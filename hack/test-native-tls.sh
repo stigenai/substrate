@@ -27,7 +27,10 @@ docker build --platform linux/amd64 --iidfile "$test_dir/image" \
 GOMAXPROCS=2 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go test -p=2 -c -tags=native_tls_integration \
 	-o "$test_dir/native-tls.test" ./cmd/atenet/internal/router/egress
 docker run --rm --network none --cap-drop ALL --read-only --tmpfs /tmp \
+	--add-host api.test:127.0.0.1 --add-host chat.test:127.0.0.1 \
 	-e SUBSTRATE_NATIVE_TLS_ENVOY=/usr/local/bin/envoy \
+	-e SUBSTRATE_EGRESS_MANIFEST=/atenet-egress-with-sdsmint.yaml \
+	-v "$PWD/manifests/ate-install/atenet-egress-with-sdsmint.yaml:/atenet-egress-with-sdsmint.yaml:ro" \
 	-v "$test_dir/native-tls.test:/native-tls.test:ro" \
 	--entrypoint /native-tls.test "$(cat "$test_dir/image")" \
-	-test.run '^TestNativeTLSEnvoy$' -test.v -test.timeout 60s
+	-test.run '^(TestNativeTLSEnvoy|TestEgressUpstreamSessionPerSNI)$' -test.v -test.timeout 60s

@@ -1895,7 +1895,7 @@ type SupervisorActivation struct {
 	// +k8s:required
 	// +k8s:format=k8s-uuid
 	ActivationId string `protobuf:"bytes,1,opt,name=activation_id,json=activationId,proto3" json:"activation_id,omitempty"`
-	// UID of the worker that runs the activation.
+	// Kubernetes UID of the worker Pod that runs the activation.
 	// +k8s:required
 	// +k8s:format=k8s-uuid
 	WorkerUid string `protobuf:"bytes,2,opt,name=worker_uid,json=workerUid,proto3" json:"worker_uid,omitempty"`
@@ -4099,7 +4099,7 @@ func (x *SystemInfoVolumeSource) GetDataSources() []*SystemInfoDataSource {
 
 type SystemInfoDataSource struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Exactly one of actor_metadata / trust_bundle must be set.
+	// Exactly one of actor_metadata / trust_bundle / supervisor_bootstrap must be set.
 	//
 	// +k8s:optional
 	// +k8s:unionMember

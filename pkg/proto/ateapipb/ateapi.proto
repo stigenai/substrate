@@ -743,7 +743,7 @@ message SupervisorActivation {
   // +k8s:required
   // +k8s:format=k8s-uuid
   string activation_id = 1;
-  // UID of the worker that runs the activation.
+  // Kubernetes UID of the worker Pod that runs the activation.
   // +k8s:required
   // +k8s:format=k8s-uuid
   string worker_uid = 2;
@@ -1404,7 +1404,7 @@ message SystemInfoVolumeSource {
 }
 
 message SystemInfoDataSource {
-  // Exactly one of actor_metadata / trust_bundle must be set.
+  // Exactly one of actor_metadata / trust_bundle / supervisor_bootstrap must be set.
   //
   // +k8s:optional
   // +k8s:unionMember

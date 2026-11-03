@@ -299,9 +299,10 @@ func runConnectPool(t *testing.T, binary, path string) {
 		}
 		gotAuthority, gotActor := resp.Header.Get("x-connect-authority"), resp.Header.Get("x-actor")
 		gotPolicy, gotDst := resp.Header.Get("x-policy"), resp.Header.Get("x-dst")
-		// Only the manifest that sets these carries them.
+		// Only the sdsmint manifest carries the policy filter state; both
+		// manifests share the passthrough address.
 		policyOK := !hasPolicy || strings.Contains(gotPolicy, `"`+tn.policy+`"`)
-		dstOK := !hasPolicy || gotDst == tn.dst
+		dstOK := gotDst == tn.dst
 		if gotAuthority != tn.authority || !strings.HasSuffix(gotActor, "/"+tn.actor) || !policyOK || !dstOK {
 			wrong++
 			t.Errorf("actor %s tunnel to %s (policy %s, address %s) reached the inner listener as authority %q, actor %q, policy %q, address %q",

@@ -560,7 +560,17 @@ var resourceNames = []string{
 	"Worker",
 }
 
+// methodResourceOverrides maps an exact method name to its resource when the
+// name holds no resource name. GetSupervisorTermination reads proof about one
+// Actor incarnation; its request carries an Actor reference.
+var methodResourceOverrides = map[string]string{
+	"GetSupervisorTermination": "Actor",
+}
+
 func resourceForMethodName(methodName string) (string, error) {
+	if resource, ok := methodResourceOverrides[methodName]; ok {
+		return resource, nil
+	}
 	var matches []string
 	for _, name := range resourceNames {
 		if strings.Contains(methodName, name) {

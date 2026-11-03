@@ -211,6 +211,7 @@ service FixtureService {
   rpc GetActor(GetActorRequest) returns (Actor);
   rpc CreateActor(CreateActorRequest) returns (Actor);
   rpc GetWorker(GetWorkerRequest) returns (Worker);
+  rpc GetSupervisorTermination(GetActorRequest) returns (Actor);
 }
 
 message GetActorRequest { string name = 1; }
@@ -240,7 +241,7 @@ message Worker { string name = 1; }
 	for _, m := range actorGroup.Methods {
 		gotNames = append(gotNames, m.Name)
 	}
-	wantNames := []string{"GetActor", "CreateActor"}
+	wantNames := []string{"GetActor", "CreateActor", "GetSupervisorTermination"}
 	if len(gotNames) != len(wantNames) {
 		t.Fatalf("Actor group methods = %v, want %v", gotNames, wantNames)
 	}
@@ -258,6 +259,9 @@ func TestResources_InvalidMethodName(t *testing.T) {
 	}{
 		{"no resource name matches", "DoThing"},
 		{"two equally-specific resource names match", "ActorSnapshotAndActorTemplate"},
+		{"override is exact: plural", "GetSupervisorTerminations"},
+		{"override is exact: no verb", "SupervisorTermination"},
+		{"override is case-sensitive", "getSupervisorTermination"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

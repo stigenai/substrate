@@ -1773,6 +1773,8 @@ type ActorStatus struct {
 	// Retained before releasing the worker assignment; never supplied by clients.
 	// +k8s:optional
 	SupervisorStop *SupervisorTerminationAck `protobuf:"bytes,11,opt,name=supervisor_stop,json=supervisorStop,proto3" json:"supervisor_stop,omitempty"`
+	// Name of the node that stopped the protected activation. The receipt
+	// copies it.
 	// +k8s:optional
 	SupervisorStopNode string `protobuf:"bytes,12,opt,name=supervisor_stop_node,json=supervisorStopNode,proto3" json:"supervisor_stop_node,omitempty"`
 	unknownFields      protoimpl.UnknownFields
@@ -1889,21 +1891,28 @@ func (x *ActorStatus) GetSupervisorStopNode() string {
 // SupervisorActivation is retained before a protected actor starts.
 type SupervisorActivation struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
+	// Unique identity of this activation. A resume gets a new one.
 	// +k8s:required
 	// +k8s:format=k8s-uuid
 	ActivationId string `protobuf:"bytes,1,opt,name=activation_id,json=activationId,proto3" json:"activation_id,omitempty"`
+	// Kubernetes UID of the worker Pod that runs the activation.
 	// +k8s:required
 	// +k8s:format=k8s-uuid
 	WorkerUid string `protobuf:"bytes,2,opt,name=worker_uid,json=workerUid,proto3" json:"worker_uid,omitempty"`
+	// UID of the actor template the activation was started from.
 	// +k8s:required
 	// +k8s:format=k8s-uuid
 	TemplateUid string `protobuf:"bytes,3,opt,name=template_uid,json=templateUid,proto3" json:"template_uid,omitempty"`
+	// Digest of the actor template, as sha256:<64 hex characters>.
 	// +k8s:required
 	TemplateDigest string `protobuf:"bytes,4,opt,name=template_digest,json=templateDigest,proto3" json:"template_digest,omitempty"`
+	// Digest of the actor image, as sha256:<64 hex characters>.
 	// +k8s:required
 	ImageDigest string `protobuf:"bytes,5,opt,name=image_digest,json=imageDigest,proto3" json:"image_digest,omitempty"`
+	// Digest of the launch parameters, as sha256:<64 hex characters>.
 	// +k8s:required
 	LaunchDigest string `protobuf:"bytes,6,opt,name=launch_digest,json=launchDigest,proto3" json:"launch_digest,omitempty"`
+	// Bootstrap profile of the activation. Only fabriek-native-v1 is supported.
 	// +k8s:required
 	Profile       string `protobuf:"bytes,7,opt,name=profile,proto3" json:"profile,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -1991,13 +2000,18 @@ func (x *SupervisorActivation) GetProfile() string {
 
 // Produced only after stopping a runtime-held exact protected activation.
 type SupervisorTerminationAck struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	SchemaVersion string                 `protobuf:"bytes,1,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
-	ActorUid      string                 `protobuf:"bytes,2,opt,name=actor_uid,json=actorUid,proto3" json:"actor_uid,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Version of the acknowledgement schema.
+	SchemaVersion string `protobuf:"bytes,1,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
+	// UID of the actor incarnation that was stopped.
+	ActorUid string `protobuf:"bytes,2,opt,name=actor_uid,json=actorUid,proto3" json:"actor_uid,omitempty"`
+	// The activation that was stopped.
 	// +k8s:required
-	Activation        *SupervisorActivation  `protobuf:"bytes,3,opt,name=activation,proto3" json:"activation,omitempty"`
-	AcknowledgementId string                 `protobuf:"bytes,4,opt,name=acknowledgement_id,json=acknowledgementId,proto3" json:"acknowledgement_id,omitempty"`
-	TerminatedAt      *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=terminated_at,json=terminatedAt,proto3" json:"terminated_at,omitempty"`
+	Activation *SupervisorActivation `protobuf:"bytes,3,opt,name=activation,proto3" json:"activation,omitempty"`
+	// Unique identity of this acknowledgement.
+	AcknowledgementId string `protobuf:"bytes,4,opt,name=acknowledgement_id,json=acknowledgementId,proto3" json:"acknowledgement_id,omitempty"`
+	// Time at which the runtime stopped the activation.
+	TerminatedAt *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=terminated_at,json=terminatedAt,proto3" json:"terminated_at,omitempty"`
 	// Exactly "gvisor" or "microvm".
 	Runtime       string `protobuf:"bytes,6,opt,name=runtime,proto3" json:"runtime,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -2078,18 +2092,27 @@ func (x *SupervisorTerminationAck) GetRuntime() string {
 
 // Committed atomically with deletion of the exact Actor incarnation.
 type SupervisorTerminationReceipt struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	SchemaVersion string                 `protobuf:"bytes,1,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
-	Atespace      string                 `protobuf:"bytes,2,opt,name=atespace,proto3" json:"atespace,omitempty"`
-	ActorName     string                 `protobuf:"bytes,3,opt,name=actor_name,json=actorName,proto3" json:"actor_name,omitempty"`
-	ActorUid      string                 `protobuf:"bytes,4,opt,name=actor_uid,json=actorUid,proto3" json:"actor_uid,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Version of the receipt schema.
+	SchemaVersion string `protobuf:"bytes,1,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
+	// Atespace of the deleted actor.
+	Atespace string `protobuf:"bytes,2,opt,name=atespace,proto3" json:"atespace,omitempty"`
+	// Name of the deleted actor.
+	ActorName string `protobuf:"bytes,3,opt,name=actor_name,json=actorName,proto3" json:"actor_name,omitempty"`
+	// UID of the deleted actor incarnation.
+	ActorUid string `protobuf:"bytes,4,opt,name=actor_uid,json=actorUid,proto3" json:"actor_uid,omitempty"`
+	// The activation that was stopped.
 	// +k8s:required
 	Activation *SupervisorActivation `protobuf:"bytes,5,opt,name=activation,proto3" json:"activation,omitempty"`
-	NodeName   string                `protobuf:"bytes,6,opt,name=node_name,json=nodeName,proto3" json:"node_name,omitempty"`
+	// Name of the node that stopped the activation.
+	NodeName string `protobuf:"bytes,6,opt,name=node_name,json=nodeName,proto3" json:"node_name,omitempty"`
+	// The runtime acknowledgement of the stop.
 	// +k8s:required
-	Stop          *SupervisorTerminationAck `protobuf:"bytes,7,opt,name=stop,proto3" json:"stop,omitempty"`
-	DeletionId    string                    `protobuf:"bytes,8,opt,name=deletion_id,json=deletionId,proto3" json:"deletion_id,omitempty"`
-	DeletedAt     *timestamppb.Timestamp    `protobuf:"bytes,9,opt,name=deleted_at,json=deletedAt,proto3" json:"deleted_at,omitempty"`
+	Stop *SupervisorTerminationAck `protobuf:"bytes,7,opt,name=stop,proto3" json:"stop,omitempty"`
+	// Unique identity of the deletion that this receipt was committed with.
+	DeletionId string `protobuf:"bytes,8,opt,name=deletion_id,json=deletionId,proto3" json:"deletion_id,omitempty"`
+	// Time at which the actor was deleted.
+	DeletedAt     *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=deleted_at,json=deletedAt,proto3" json:"deleted_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2187,12 +2210,17 @@ func (x *SupervisorTerminationReceipt) GetDeletedAt() *timestamppb.Timestamp {
 	return nil
 }
 
+// GetSupervisorTerminationRequest names the exact actor incarnation and
+// activation whose termination receipt to read.
 type GetSupervisorTerminationRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
+	// The actor to look up. Atespace and name are required.
 	// +k8s:required
-	Actor         *ObjectRef `protobuf:"bytes,1,opt,name=actor,proto3" json:"actor,omitempty"`
-	ActorUid      string     `protobuf:"bytes,2,opt,name=actor_uid,json=actorUid,proto3" json:"actor_uid,omitempty"`
-	ActivationId  string     `protobuf:"bytes,3,opt,name=activation_id,json=activationId,proto3" json:"activation_id,omitempty"`
+	Actor *ObjectRef `protobuf:"bytes,1,opt,name=actor,proto3" json:"actor,omitempty"`
+	// UID of the actor incarnation. Required.
+	ActorUid string `protobuf:"bytes,2,opt,name=actor_uid,json=actorUid,proto3" json:"actor_uid,omitempty"`
+	// Identity of the activation, as a UUID. Required.
+	ActivationId  string `protobuf:"bytes,3,opt,name=activation_id,json=activationId,proto3" json:"activation_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4071,7 +4099,7 @@ func (x *SystemInfoVolumeSource) GetDataSources() []*SystemInfoDataSource {
 
 type SystemInfoDataSource struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Exactly one of actor_metadata / trust_bundle must be set.
+	// Exactly one of actor_metadata / trust_bundle / supervisor_bootstrap must be set.
 	//
 	// +k8s:optional
 	// +k8s:unionMember
@@ -4079,6 +4107,7 @@ type SystemInfoDataSource struct {
 	// +k8s:optional
 	// +k8s:unionMember
 	TrustBundle *TrustBundleDataSource `protobuf:"bytes,2,opt,name=trust_bundle,json=trustBundle,proto3" json:"trust_bundle,omitempty"`
+	// Projects the protected supervisor bootstrap identity.
 	// +k8s:optional
 	// +k8s:unionMember
 	SupervisorBootstrap *SupervisorBootstrapDataSource `protobuf:"bytes,3,opt,name=supervisor_bootstrap,json=supervisorBootstrap,proto3" json:"supervisor_bootstrap,omitempty"`

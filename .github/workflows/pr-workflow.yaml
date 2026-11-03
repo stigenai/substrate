@@ -105,6 +105,21 @@ jobs:
         if-no-files-found: error
     - name: verify
       run: hack/verify-all.sh
+  # Real-Envoy egress tier: builds the dataplane image and runs the
+  # native_tls_integration tests against it. The script fails if the Envoy
+  # binary is missing.
+  native-tls:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+    - name: Checkout
+      uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+    - name: Setup Go
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+      with:
+        go-version-file: 'go.mod'
+    - name: native TLS integration tests
+      run: hack/test-native-tls.sh
   # One kind cluster exercises BOTH runtimes. Free x86-64 ubuntu-latest runners
   # expose /dev/kvm (with a udev rule), so create-kind-cluster.sh mounts it and the
   # micro-VM (kata + cloud-hypervisor) sandbox class works alongside gVisor.

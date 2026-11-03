@@ -731,38 +731,52 @@ message ActorStatus {
   // Retained before releasing the worker assignment; never supplied by clients.
   // +k8s:optional
   SupervisorTerminationAck supervisor_stop = 11;
+  // Name of the node that stopped the protected activation. The receipt
+  // copies it.
   // +k8s:optional
   string supervisor_stop_node = 12;
 }
 
 // SupervisorActivation is retained before a protected actor starts.
 message SupervisorActivation {
+  // Unique identity of this activation. A resume gets a new one.
   // +k8s:required
   // +k8s:format=k8s-uuid
   string activation_id = 1;
+  // Kubernetes UID of the worker Pod that runs the activation.
   // +k8s:required
   // +k8s:format=k8s-uuid
   string worker_uid = 2;
+  // UID of the actor template the activation was started from.
   // +k8s:required
   // +k8s:format=k8s-uuid
   string template_uid = 3;
+  // Digest of the actor template, as sha256:<64 hex characters>.
   // +k8s:required
   string template_digest = 4;
+  // Digest of the actor image, as sha256:<64 hex characters>.
   // +k8s:required
   string image_digest = 5;
+  // Digest of the launch parameters, as sha256:<64 hex characters>.
   // +k8s:required
   string launch_digest = 6;
+  // Bootstrap profile of the activation. Only fabriek-native-v1 is supported.
   // +k8s:required
   string profile = 7;
 }
 
 // Produced only after stopping a runtime-held exact protected activation.
 message SupervisorTerminationAck {
+  // Version of the acknowledgement schema.
   string schema_version = 1;
+  // UID of the actor incarnation that was stopped.
   string actor_uid = 2;
+  // The activation that was stopped.
   // +k8s:required
   SupervisorActivation activation = 3;
+  // Unique identity of this acknowledgement.
   string acknowledgement_id = 4;
+  // Time at which the runtime stopped the activation.
   google.protobuf.Timestamp terminated_at = 5;
   // Exactly "gvisor" or "microvm".
   string runtime = 6;
@@ -770,23 +784,37 @@ message SupervisorTerminationAck {
 
 // Committed atomically with deletion of the exact Actor incarnation.
 message SupervisorTerminationReceipt {
+  // Version of the receipt schema.
   string schema_version = 1;
+  // Atespace of the deleted actor.
   string atespace = 2;
+  // Name of the deleted actor.
   string actor_name = 3;
+  // UID of the deleted actor incarnation.
   string actor_uid = 4;
+  // The activation that was stopped.
   // +k8s:required
   SupervisorActivation activation = 5;
+  // Name of the node that stopped the activation.
   string node_name = 6;
+  // The runtime acknowledgement of the stop.
   // +k8s:required
   SupervisorTerminationAck stop = 7;
+  // Unique identity of the deletion that this receipt was committed with.
   string deletion_id = 8;
+  // Time at which the actor was deleted.
   google.protobuf.Timestamp deleted_at = 9;
 }
 
+// GetSupervisorTerminationRequest names the exact actor incarnation and
+// activation whose termination receipt to read.
 message GetSupervisorTerminationRequest {
+  // The actor to look up. Atespace and name are required.
   // +k8s:required
   ObjectRef actor = 1;
+  // UID of the actor incarnation. Required.
   string actor_uid = 2;
+  // Identity of the activation, as a UUID. Required.
   string activation_id = 3;
 }
 
@@ -1376,7 +1404,7 @@ message SystemInfoVolumeSource {
 }
 
 message SystemInfoDataSource {
-  // Exactly one of actor_metadata / trust_bundle must be set.
+  // Exactly one of actor_metadata / trust_bundle / supervisor_bootstrap must be set.
   //
   // +k8s:optional
   // +k8s:unionMember
@@ -1386,6 +1414,7 @@ message SystemInfoDataSource {
   // +k8s:unionMember
   TrustBundleDataSource trust_bundle = 2;
 
+  // Projects the protected supervisor bootstrap identity.
   // +k8s:optional
   // +k8s:unionMember
   SupervisorBootstrapDataSource supervisor_bootstrap = 3;

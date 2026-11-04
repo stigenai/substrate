@@ -329,6 +329,15 @@ func unsafePath(rawPath string) bool {
 	return false
 }
 
+// CheckExactPath reports why path cannot be an exact path of a rule: it must
+// start with "/", hold no "?" or "#", and not be unsafe (see unsafePath).
+func CheckExactPath(path string) error {
+	if !strings.HasPrefix(path, "/") || strings.ContainsAny(path, "?#") || unsafePath(path) {
+		return errors.New(`must start with "/" and contain no "?", "#", "." or ".." segment, "%2e", "%2f", "%5c" or backslash`)
+	}
+	return nil
+}
+
 // matchName reports whether any pattern matches dest, and how specific the
 // best one is. A destination named by an IP literal is matched by "*" alone.
 func (r compiledRule) matchName(dest Destination) (int, bool) {

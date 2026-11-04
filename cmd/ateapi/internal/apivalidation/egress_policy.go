@@ -225,6 +225,18 @@ func ValidateCustom_HTTPSRule_PathPrefixes(_ context.Context, _ operation.Operat
 	return errs
 }
 
+// ValidateCustom_HTTPSRule_Paths checks each entry with the rule the gateway
+// compiles with.
+func ValidateCustom_HTTPSRule_Paths(_ context.Context, _ operation.Operation, p *field.Path, paths, _ []string) field.ErrorList {
+	var errs field.ErrorList
+	for i, path := range paths {
+		if err := egresspolicy.CheckExactPath(path); err != nil {
+			errs = append(errs, field.Invalid(p.Index(i), path, err.Error()))
+		}
+	}
+	return errs
+}
+
 func ValidateCustom_TLSPassthroughRule_Hostnames(_ context.Context, _ operation.Operation, p *field.Path, patterns, _ []string) field.ErrorList {
 	return validateHostnamePatterns(patterns, p)
 }

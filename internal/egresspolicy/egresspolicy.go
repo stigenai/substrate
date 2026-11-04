@@ -32,8 +32,10 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
+	"golang.org/x/text/unicode/norm"
 	"k8s.io/apimachinery/pkg/api/validate/content"
 
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
@@ -335,7 +337,9 @@ func (r compiledRule) matchPath(dest Destination) (int, bool) {
 //   - no escape stands for an unreserved byte (letter, digit, "-._~"), "%",
 //     "/", "\" or ";", so one decode never makes a dot, a slash or a second
 //     escape, and "%252e" is denied;
-//   - the path decoded once is valid UTF-8 (this denies "%c0%ae"); and
+//   - the path decoded once is valid UTF-8 (this denies "%c0%ae");
+//   - the path decoded once is NFKC-normal and holds no control character, so
+//     "%EF%BC%8E" (fullwidth ".") and "%00" fail; and
 //   - no segment is "." or "..".
 func unsafePath(rawPath string) bool {
 	path, _, _ := strings.Cut(rawPath, "?")
@@ -355,7 +359,8 @@ func unsafePath(rawPath string) bool {
 		}
 		i += 2
 	}
-	if decoded, err := url.PathUnescape(path); err != nil || !utf8.ValidString(decoded) {
+	if decoded, err := url.PathUnescape(path); err != nil || !utf8.ValidString(decoded) ||
+		!norm.NFKC.IsNormalString(decoded) || strings.IndexFunc(decoded, unicode.IsControl) >= 0 {
 		return true
 	}
 	for _, segment := range strings.Split(path, "/") {
@@ -374,7 +379,7 @@ func isUnreserved(b byte) bool {
 // start with "/", hold no "?" or "#", and not be unsafe (see unsafePath).
 func CheckExactPath(path string) error {
 	if !strings.HasPrefix(path, "/") || strings.ContainsAny(path, "?#") || unsafePath(path) {
-		return errors.New(`must start with "/" and contain no "?", "#", ";" or backslash, no "." or ".." segment, no malformed escape, no escape of a letter, digit, "-", ".", "_", "~", "%", "/", "\" or ";", and no escape that decodes to invalid UTF-8`)
+		return errors.New(`must start with "/" and contain no "?", "#", ";" or backslash, no "." or ".." segment, no malformed escape, no escape of a letter, digit, "-", ".", "_", "~", "%", "/", "\" or ";", no escape that decodes to invalid UTF-8, and no character that NFKC changes or control character`)
 	}
 	return nil
 }

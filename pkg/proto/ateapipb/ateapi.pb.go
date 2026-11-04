@@ -1331,8 +1331,9 @@ type HTTPSRule struct {
 	// when no prefixed rule matches. A request whose path has a "." or ".."
 	// segment, a ";" or a backslash, a malformed escape, an escape of a letter,
 	// digit, "-", ".", "_" or "~", an escape of "%", "/", "\" or ";" (so "%2e",
-	// "%2f", "%5c", "%3b" and "%25"), or an escape that decodes to invalid UTF-8
-	// is denied when some prefixed rule matches its name and port. Two
+	// "%2f", "%5c", "%3b" and "%25"), an escape that decodes to invalid UTF-8,
+	// or a decoded path that NFKC changes or that holds a control character (so
+	// "%EF%BC%8E" and "%00") is denied when some prefixed rule matches its name and port. Two
 	// rules for the same name and port may not share a prefix. The TLS
 	// connection is allowed when any rule for its name and port is. Prefixes
 	// select which credential is sent; they are not an authorization boundary,
@@ -1350,7 +1351,8 @@ type HTTPSRule struct {
 	// match is case-sensitive. An exact match beats any prefix. An entry must
 	// start with "/". It must not hold "?", "#", ";", a backslash, a "." or ".."
 	// segment, a malformed escape, an escape of an unreserved byte or of "%", "/",
-	// "\" or ";", or an escape that decodes to invalid UTF-8. Two rules for the same name and port must not
+	// "\" or ";", an escape that decodes to invalid UTF-8, or a decoded path that
+	// NFKC changes or that holds a control character. Two rules for the same name and port must not
 	// share a path. If a rule has paths or path_prefixes, the gateway denies a
 	// request whose path holds one of those unsafe forms. Paths select which
 	// credential the gateway sends. They are not an authorization boundary.

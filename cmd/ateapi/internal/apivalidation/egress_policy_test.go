@@ -402,7 +402,7 @@ func TestValidateEgressPolicyRules(t *testing.T) {
 	exactHTTPSRule := func(host string, paths ...string) *ateapipb.EgressRule {
 		return &ateapipb.EgressRule{Https: &ateapipb.HTTPSRule{Hostnames: []string{host}, Paths: paths}}
 	}
-	const badExactPath = `must start with "/" and contain no "?", "#", ";" or backslash, no "." or ".." segment, no malformed escape, no escape of a letter, digit, "-", ".", "_", "~", "%", "/", "\" or ";", and no escape that decodes to invalid UTF-8`
+	const badExactPath = `must start with "/" and contain no "?", "#", ";" or backslash, no "." or ".." segment, no malformed escape, no escape of a letter, digit, "-", ".", "_", "~", "%", "/", "\" or ";", no escape that decodes to invalid UTF-8, and no character that NFKC changes or control character`
 	passthroughRule := func(ports *ateapipb.Ports, patterns ...string) *ateapipb.EgressRule {
 		return &ateapipb.EgressRule{TlsPassthrough: &ateapipb.TLSPassthroughRule{Hostnames: patterns, Ports: ports}}
 	}

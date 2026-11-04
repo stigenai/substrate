@@ -557,6 +557,24 @@ message HTTPSRule {
   // +k8s:eachVal=+k8s:maxLength=1024
   // +k8s:customValidation # format
   repeated string path_prefixes = 4;
+
+  // Exact request paths the rule applies to. A request matches when its path,
+  // up to any "?", equals an entry. The gateway decodes no escape, and the
+  // match is case-sensitive. An exact match beats any prefix. An entry must
+  // start with "/". It must not hold "?", "#", a "." or ".." segment, "%2e",
+  // "%2f", "%5c" or a backslash. Two rules for the same name and port must not
+  // share a path. If a rule has paths or path_prefixes, the gateway denies a
+  // request whose path holds one of those unsafe forms. Paths select which
+  // credential the gateway sends. They are not an authorization boundary.
+  // Roll out ateapi, then atenet, then clients. An atenet without this field
+  // ignores it and widens the rule to all paths.
+  //
+  // +k8s:optional
+  // +k8s:maxItems=16
+  // +k8s:listType=set
+  // +k8s:eachVal=+k8s:maxLength=1024
+  // +k8s:customValidation # format
+  repeated string paths = 5;
 }
 
 // TLSPassthroughRule allows TLS that the gateway forwards without decryption.

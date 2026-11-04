@@ -25,6 +25,7 @@ package egresspolicy
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/netip"
 	"slices"
@@ -51,11 +52,11 @@ type Destination struct {
 	// request's authority is not this.
 	Port uint16
 	// Path is the request path, with any query, when HasPath. Only https rules
-	// with path prefixes look at it.
+	// with paths or path prefixes look at it.
 	Path string
 	// HasPath reports that Path is known. It is false for a decision made
 	// before any request exists, such as the one on a TLS connection's SNI,
-	// where a rule with path prefixes matches whatever its prefixes are.
+	// where a rule with paths or path prefixes matches whatever they are.
 	HasPath bool
 }
 
@@ -91,10 +92,11 @@ type compiledRule struct {
 	// ports the rule names; anyPort when it names all of them.
 	ports   []uint16
 	anyPort bool
-	// pathScoped is set when the rule names path prefixes, even if none
-	// survived Compile, so a dropped prefix can never widen the rule to all
-	// paths.
+	// pathScoped is set when the rule names paths or path prefixes, even if
+	// none survived Compile, so a dropped entry can never widen the rule to
+	// all paths.
 	pathScoped   bool
+	paths        []string
 	pathPrefixes []string
 	effects      *ateapipb.HttpRuleEffects
 }
@@ -131,7 +133,14 @@ func Compile(policy *ateapipb.EgressPolicy) (*Policy, []error) {
 			cr.protocol, cr.effects = protocolHTTPS, rule.GetHttps().GetEffects()
 			member = "https"
 			raw, ports, defaultPort = rule.GetHttps().GetHostnames(), rule.GetHttps().GetPorts(), defaultHTTPSPort
-			cr.pathScoped = len(rule.GetHttps().GetPathPrefixes()) > 0
+			cr.pathScoped = len(rule.GetHttps().GetPathPrefixes()) > 0 || len(rule.GetHttps().GetPaths()) > 0
+			for _, path := range rule.GetHttps().GetPaths() {
+				if err := CheckExactPath(path); err != nil {
+					errs = append(errs, fmt.Errorf("rules[%d].https.paths: %q %w", i, path, err))
+					continue
+				}
+				cr.paths = append(cr.paths, path)
+			}
 			for _, prefix := range rule.GetHttps().GetPathPrefixes() {
 				if !strings.HasPrefix(prefix, "/") || !strings.HasSuffix(prefix, "/") {
 					errs = append(errs, fmt.Errorf("rules[%d].https.path_prefixes: %q does not start and end with \"/\"", i, prefix))
@@ -257,9 +266,10 @@ func (p *Policy) SNIRules(port uint16) []SNIRule {
 // the https rules, for a request the gateway terminated TLS for; otherwise
 // the http rules apply. A tls_passthrough rule never decides a request.
 //
-// When dest.HasPath, an https rule with path prefixes decides only a request
-// whose path starts with one of them, and the longest matching prefix wins
-// over a shorter one and over a rule with no prefixes. A path that a server
+// When dest.HasPath, an https rule with paths or path prefixes decides only a
+// request whose path equals a path or starts with a prefix. An exact path wins
+// over any prefix. The longest matching prefix wins over a shorter one and
+// over a rule with neither. A path that a server
 // could resolve to a different one is denied if any such rule matches the
 // name and port; see unsafePath.
 func (p *Policy) EvaluateRequest(dest Destination, decrypted bool) Decision {
@@ -292,14 +302,18 @@ func (p *Policy) EvaluateRequest(dest Destination, decrypted bool) Decision {
 }
 
 // matchPath reports whether the rule applies to dest's path, and the path
-// rank: 0 for a rule with no prefixes, and the negated length of the longest
-// matching prefix otherwise, so a longer prefix is more specific. It matches
-// the raw path up to "?", with no decoding.
+// rank: math.MinInt for an exact path, 0 for a rule with no paths or prefixes,
+// and the negated length of the longest matching prefix otherwise. A longer
+// prefix is more specific. It matches the raw path up to "?", with no
+// decoding.
 func (r compiledRule) matchPath(dest Destination) (int, bool) {
 	if !r.pathScoped || !dest.HasPath {
 		return 0, true
 	}
 	path, _, _ := strings.Cut(dest.Path, "?")
+	if slices.Contains(r.paths, path) {
+		return math.MinInt, true
+	}
 	best, found := 0, false
 	for _, prefix := range r.pathPrefixes {
 		if strings.HasPrefix(path, prefix) && len(prefix) > -best {
@@ -327,6 +341,15 @@ func unsafePath(rawPath string) bool {
 		}
 	}
 	return false
+}
+
+// CheckExactPath reports why path cannot be an exact path of a rule: it must
+// start with "/", hold no "?" or "#", and not be unsafe (see unsafePath).
+func CheckExactPath(path string) error {
+	if !strings.HasPrefix(path, "/") || strings.ContainsAny(path, "?#") || unsafePath(path) {
+		return errors.New(`must start with "/" and contain no "?", "#", "." or ".." segment, "%2e", "%2f", "%5c" or backslash`)
+	}
+	return nil
 }
 
 // matchName reports whether any pattern matches dest, and how specific the

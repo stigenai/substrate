@@ -399,6 +399,10 @@ func TestValidateEgressPolicyRules(t *testing.T) {
 	scopedHTTPSRule := func(host string, prefixes ...string) *ateapipb.EgressRule {
 		return &ateapipb.EgressRule{Https: &ateapipb.HTTPSRule{Hostnames: []string{host}, PathPrefixes: prefixes}}
 	}
+	exactHTTPSRule := func(host string, paths ...string) *ateapipb.EgressRule {
+		return &ateapipb.EgressRule{Https: &ateapipb.HTTPSRule{Hostnames: []string{host}, Paths: paths}}
+	}
+	const badExactPath = `must start with "/" and contain no "?", "#", "." or ".." segment, "%2e", "%2f", "%5c" or backslash`
 	passthroughRule := func(ports *ateapipb.Ports, patterns ...string) *ateapipb.EgressRule {
 		return &ateapipb.EgressRule{TlsPassthrough: &ateapipb.TLSPassthroughRule{Hostnames: patterns, Ports: ports}}
 	}
@@ -829,6 +833,91 @@ func TestValidateEgressPolicyRules(t *testing.T) {
 		},
 		want: field.ErrorList{
 			field.Duplicate(rules.Index(0).Child("https", "path_prefixes").Index(1), "/a/"),
+		},
+	}, {
+		name: "exact paths are valid",
+		mutate: func(p *ateapipb.EgressPolicy) {
+			p.Rules = []*ateapipb.EgressRule{exactHTTPSRule("chatgpt.com", "/", "/backend-api/wham/accounts/check", "/a/", "/a..b", "//a")}
+		},
+	}, {
+		name: "too many exact paths",
+		mutate: func(p *ateapipb.EgressPolicy) {
+			var many []string
+			for i := range 17 {
+				many = append(many, fmt.Sprintf("/p%d", i))
+			}
+			p.Rules = []*ateapipb.EgressRule{exactHTTPSRule("chatgpt.com", many...)}
+		},
+		want: field.ErrorList{
+			field.TooMany(rules.Index(0).Child("https", "paths"), 17, 16).WithOrigin("maxItems"),
+		},
+	}, {
+		name: "exact path too long",
+		mutate: func(p *ateapipb.EgressPolicy) {
+			p.Rules = []*ateapipb.EgressRule{exactHTTPSRule("chatgpt.com", "/"+strings.Repeat("a", 1024))}
+		},
+		want: field.ErrorList{
+			field.TooLong(rules.Index(0).Child("https", "paths").Index(0), "", 1024).WithOrigin("maxLength"),
+		},
+	}, {
+		name: "duplicate exact path",
+		mutate: func(p *ateapipb.EgressPolicy) {
+			p.Rules = []*ateapipb.EgressRule{exactHTTPSRule("chatgpt.com", "/a", "/a")}
+		},
+		want: field.ErrorList{
+			field.Duplicate(rules.Index(0).Child("https", "paths").Index(1), "/a"),
+		},
+	}, {
+		name: "exact paths in one rule that are unsafe or malformed",
+		mutate: func(p *ateapipb.EgressPolicy) {
+			p.Rules = []*ateapipb.EgressRule{exactHTTPSRule("chatgpt.com", "", "a", "/a?x=1", "/a#x", "/a/../b", "/a/./b", "/a/%2E./b", "/a%2fb", "/a%5cb", `/a\b`)}
+		},
+		want: func() field.ErrorList {
+			var errs field.ErrorList
+			for i, path := range []string{"", "a", "/a?x=1", "/a#x", "/a/../b", "/a/./b", "/a/%2E./b", "/a%2fb", "/a%5cb", `/a\b`} {
+				errs = append(errs, field.Invalid(rules.Index(0).Child("https", "paths").Index(i), path, badExactPath))
+			}
+			return errs
+		}(),
+	}, {
+		name: "https rules sharing an exact path tie",
+		mutate: func(p *ateapipb.EgressPolicy) {
+			p.Rules = []*ateapipb.EgressRule{exactHTTPSRule("chatgpt.com", "/y", "/x"), exactHTTPSRule("chatgpt.com", "/x")}
+		},
+		want: field.ErrorList{
+			field.Invalid(rules.Index(1).Child("https", "hostnames").Index(0), "chatgpt.com", `ties with egress_policy.rules[0].https.hostnames[0] on port 443 for path "/x"`),
+		},
+	}, {
+		name: "an exact path and a tls passthrough rule on the same host and port tie",
+		mutate: func(p *ateapipb.EgressPolicy) {
+			p.Rules = []*ateapipb.EgressRule{passthroughRule(portNumbers(443), "chatgpt.com"), exactHTTPSRule("chatgpt.com", "/x")}
+		},
+		want: field.ErrorList{
+			field.Invalid(rules.Index(1).Child("https", "hostnames").Index(0), "chatgpt.com", `ties with egress_policy.rules[0].tls_passthrough.hostnames[0] on port 443`),
+		},
+	}, {
+		name: "an exact path and an equal path prefix do not tie",
+		mutate: func(p *ateapipb.EgressPolicy) {
+			p.Rules = []*ateapipb.EgressRule{exactHTTPSRule("chatgpt.com", "/a/"), scopedHTTPSRule("chatgpt.com", "/a/")}
+		},
+	}, {
+		name: "an exact path and a catch-all do not tie",
+		mutate: func(p *ateapipb.EgressPolicy) {
+			p.Rules = []*ateapipb.EgressRule{exactHTTPSRule("chatgpt.com", "/x"), scopedHTTPSRule("chatgpt.com")}
+		},
+	}, {
+		name: "an exact path on different ports or hosts does not tie",
+		mutate: func(p *ateapipb.EgressPolicy) {
+			p.Rules = []*ateapipb.EgressRule{
+				exactHTTPSRule("chatgpt.com", "/x"),
+				{Https: &ateapipb.HTTPSRule{Hostnames: []string{"chatgpt.com"}, Ports: portNumbers(8443), Paths: []string{"/x"}}},
+				exactHTTPSRule("example.com", "/x"),
+			}
+		},
+	}, {
+		name: "the same string as an exact path and a prefix in one rule",
+		mutate: func(p *ateapipb.EgressPolicy) {
+			p.Rules = []*ateapipb.EgressRule{{Https: &ateapipb.HTTPSRule{Hostnames: []string{"chatgpt.com"}, Paths: []string{"/a/"}, PathPrefixes: []string{"/a/"}}}}
 		},
 	}, {
 		name: "missing static header",

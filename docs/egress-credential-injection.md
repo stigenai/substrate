@@ -130,10 +130,20 @@ could read it as a different path. Rules for one host and port must not share
 a prefix. The TLS connection is allowed when any `https` rule covers its
 server name, so a path that no rule covers is denied per request.
 
-Path prefixes select which credential is sent. They are not an authorization
-boundary: the rule with no prefixes must not hold a credential broader than a
-scoped one. Roll out in this order: ateapi, then atenet, then clients. An old
-atenet ignores `pathPrefixes` and widens the rule to all paths.
+To allow one exact path, use `paths` in place of a prefix, for example
+`paths: ["/backend-api/codex/models"]`. A request matches when its path,
+before any `?`, equals an entry. No escape is decoded, and the match is case
+sensitive. An exact match beats any prefix. A rule can have both lists, and
+either one can match. Each entry must start with `/`. It must not hold `?`,
+`#`, a `.` or `..` segment, an encoded dot, an encoded slash or a backslash.
+The same rules deny an unsafe request path as for prefixes. Rules for one host
+and port must not share an exact path.
+
+Paths and path prefixes select which credential is sent. They are not an
+authorization boundary: the rule with neither must not hold a credential
+broader than a scoped one. Roll out in this order: ateapi, then atenet, then
+clients. An old atenet ignores `paths` and `pathPrefixes` and widens the rule
+to all paths.
 
 ## What the gateway does
 

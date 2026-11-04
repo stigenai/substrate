@@ -1342,7 +1342,24 @@ type HTTPSRule struct {
 	// +k8s:listType=set
 	// +k8s:eachVal=+k8s:maxLength=1024
 	// +k8s:customValidation # format
-	PathPrefixes  []string `protobuf:"bytes,4,rep,name=path_prefixes,json=pathPrefixes,proto3" json:"path_prefixes,omitempty"`
+	PathPrefixes []string `protobuf:"bytes,4,rep,name=path_prefixes,json=pathPrefixes,proto3" json:"path_prefixes,omitempty"`
+	// Exact request paths the rule applies to. A request matches when its path,
+	// up to any "?", equals an entry. The gateway decodes no escape, and the
+	// match is case-sensitive. An exact match beats any prefix. An entry must
+	// start with "/". It must not hold "?", "#", a "." or ".." segment, "%2e",
+	// "%2f", "%5c" or a backslash. Two rules for the same name and port must not
+	// share a path. If a rule has paths or path_prefixes, the gateway denies a
+	// request whose path holds one of those unsafe forms. Paths select which
+	// credential the gateway sends. They are not an authorization boundary.
+	// Roll out ateapi, then atenet, then clients. An atenet without this field
+	// ignores it and widens the rule to all paths.
+	//
+	// +k8s:optional
+	// +k8s:maxItems=16
+	// +k8s:listType=set
+	// +k8s:eachVal=+k8s:maxLength=1024
+	// +k8s:customValidation # format
+	Paths         []string `protobuf:"bytes,5,rep,name=paths,proto3" json:"paths,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1401,6 +1418,13 @@ func (x *HTTPSRule) GetEffects() *HttpRuleEffects {
 func (x *HTTPSRule) GetPathPrefixes() []string {
 	if x != nil {
 		return x.PathPrefixes
+	}
+	return nil
+}
+
+func (x *HTTPSRule) GetPaths() []string {
+	if x != nil {
+		return x.Paths
 	}
 	return nil
 }
@@ -8125,12 +8149,13 @@ const file_ateapi_proto_rawDesc = "" +
 	"\bHTTPRule\x12\x1c\n" +
 	"\thostnames\x18\x01 \x03(\tR\thostnames\x12#\n" +
 	"\x05ports\x18\x02 \x01(\v2\r.ateapi.PortsR\x05ports\x121\n" +
-	"\aeffects\x18\x03 \x01(\v2\x17.ateapi.HttpRuleEffectsR\aeffects\"\xa6\x01\n" +
+	"\aeffects\x18\x03 \x01(\v2\x17.ateapi.HttpRuleEffectsR\aeffects\"\xbc\x01\n" +
 	"\tHTTPSRule\x12\x1c\n" +
 	"\thostnames\x18\x01 \x03(\tR\thostnames\x12#\n" +
 	"\x05ports\x18\x02 \x01(\v2\r.ateapi.PortsR\x05ports\x121\n" +
 	"\aeffects\x18\x03 \x01(\v2\x17.ateapi.HttpRuleEffectsR\aeffects\x12#\n" +
-	"\rpath_prefixes\x18\x04 \x03(\tR\fpathPrefixes\"W\n" +
+	"\rpath_prefixes\x18\x04 \x03(\tR\fpathPrefixes\x12\x14\n" +
+	"\x05paths\x18\x05 \x03(\tR\x05paths\"W\n" +
 	"\x12TLSPassthroughRule\x12\x1c\n" +
 	"\thostnames\x18\x01 \x03(\tR\thostnames\x12#\n" +
 	"\x05ports\x18\x02 \x01(\v2\r.ateapi.PortsR\x05ports\"E\n" +

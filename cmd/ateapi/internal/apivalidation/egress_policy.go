@@ -84,9 +84,9 @@ func ValidateCustom_EgressPolicy_Metadata(_ context.Context, _ operation.Operati
 
 // ValidateCustom_EgressPolicy_Rules rejects two rules that tie on a pattern
 // and a port, whatever their protocols: the gateway would have no way to pick
-// one. Two https rules tie only when they also share a path prefix, and a rule
-// with no path prefixes holds the empty prefix, so it ties with another such
-// rule but not with a prefixed one. An http or tls_passthrough rule has no
+// one. Two https rules tie only when they also share a path prefix or an exact
+// path, and a rule with neither holds the empty prefix, so it ties with
+// another such rule but not with a scoped one. An http or tls_passthrough rule has no
 // path, so it ties with any other-protocol rule on the pattern and port.
 // Defaults are applied before validation, so an http rule left on 80 and an
 // https rule left on 443 never tie.
@@ -97,7 +97,7 @@ func ValidateCustom_EgressPolicy_Rules(_ context.Context, _ operation.Operation,
 	}
 	type key struct {
 		hostKey
-		prefix string
+		path pathKey
 	}
 	type match struct {
 		rule int
@@ -107,11 +107,11 @@ func ValidateCustom_EgressPolicy_Rules(_ context.Context, _ operation.Operation,
 	httpsSeen := map[key]match{}     // https rules, by prefix
 	httpsHost := map[hostKey]match{} // first https rule, whatever its prefix
 	otherHost := map[hostKey]match{} // first http or tls_passthrough rule
-	tie := func(path *field.Path, pattern string, prior match, port portKey, prefix string) *field.Error {
-		return field.Invalid(path, pattern, fmt.Sprintf("ties with %s on %s%s", prior.path, port, prefixSuffix(prefix)))
+	tie := func(path *field.Path, pattern string, prior match, port portKey, pk pathKey) *field.Error {
+		return field.Invalid(path, pattern, fmt.Sprintf("ties with %s on %s%s", prior.path, port, pk.suffix()))
 	}
 	for i, rule := range rules {
-		member, patterns, ports, prefixes := ruleMatchFields(rule)
+		member, patterns, ports, pathKeys := ruleMatchFields(rule)
 		if member == "" {
 			continue // handled by the union check
 		}
@@ -123,27 +123,27 @@ func ValidateCustom_EgressPolicy_Rules(_ context.Context, _ operation.Operation,
 				// A repeat within one rule is reported by the set check.
 				if member != "https" {
 					if prior, ok := httpsHost[hk]; ok && prior.rule != i {
-						errs = append(errs, tie(path, pattern, prior, port, ""))
+						errs = append(errs, tie(path, pattern, prior, port, pathKey{}))
 					}
 					if prior, ok := otherHost[hk]; !ok {
 						otherHost[hk] = cur
 					} else if prior.rule != i {
-						errs = append(errs, tie(path, pattern, prior, port, ""))
+						errs = append(errs, tie(path, pattern, prior, port, pathKey{}))
 					}
 					continue
 				}
 				if prior, ok := otherHost[hk]; ok && prior.rule != i {
-					errs = append(errs, tie(path, pattern, prior, port, ""))
+					errs = append(errs, tie(path, pattern, prior, port, pathKey{}))
 				}
 				if _, ok := httpsHost[hk]; !ok {
 					httpsHost[hk] = cur
 				}
-				for _, prefix := range prefixes {
-					k := key{hk, prefix}
+				for _, pk := range pathKeys {
+					k := key{hk, pk}
 					if prior, ok := httpsSeen[k]; !ok {
 						httpsSeen[k] = cur
 					} else if prior.rule != i {
-						errs = append(errs, tie(path, pattern, prior, port, prefix))
+						errs = append(errs, tie(path, pattern, prior, port, pk))
 					}
 				}
 			}
@@ -152,31 +152,54 @@ func ValidateCustom_EgressPolicy_Rules(_ context.Context, _ operation.Operation,
 	return errs
 }
 
+// pathKey is one thing a rule matches a path on: all paths (the zero value),
+// a prefix, or an exact path. Keys of different kinds never tie.
+type pathKey struct {
+	kind  pathKind
+	value string
+}
+
+type pathKind int
+
+const (
+	pathAll pathKind = iota
+	pathPrefix
+	pathExact
+)
+
+func (k pathKey) suffix() string {
+	switch k.kind {
+	case pathPrefix:
+		return fmt.Sprintf(" for path prefix %q", k.value)
+	case pathExact:
+		return fmt.Sprintf(" for path %q", k.value)
+	}
+	return ""
+}
+
 // ruleMatchFields is what a rule matches on: the union member, its hostnames,
-// its ports, and its path prefixes, which are [""] for a rule that matches
+// its ports, and its path keys, which are the zero key for a rule that matches
 // every path. Everything is empty for a rule that sets no member.
-func ruleMatchFields(rule *ateapipb.EgressRule) (member string, hostnames []string, ports *ateapipb.Ports, prefixes []string) {
-	allPaths := []string{""}
+func ruleMatchFields(rule *ateapipb.EgressRule) (member string, hostnames []string, ports *ateapipb.Ports, keys []pathKey) {
+	allPaths := []pathKey{{kind: pathAll}}
 	switch {
 	case rule.GetHttp() != nil:
 		return "http", rule.GetHttp().GetHostnames(), rule.GetHttp().GetPorts(), allPaths
 	case rule.GetHttps() != nil:
-		prefixes = rule.GetHttps().GetPathPrefixes()
-		if len(prefixes) == 0 {
-			prefixes = allPaths
+		for _, prefix := range rule.GetHttps().GetPathPrefixes() {
+			keys = append(keys, pathKey{pathPrefix, prefix})
 		}
-		return "https", rule.GetHttps().GetHostnames(), rule.GetHttps().GetPorts(), prefixes
+		for _, path := range rule.GetHttps().GetPaths() {
+			keys = append(keys, pathKey{pathExact, path})
+		}
+		if len(keys) == 0 {
+			keys = allPaths
+		}
+		return "https", rule.GetHttps().GetHostnames(), rule.GetHttps().GetPorts(), keys
 	case rule.GetTlsPassthrough() != nil:
 		return "tls_passthrough", rule.GetTlsPassthrough().GetHostnames(), rule.GetTlsPassthrough().GetPorts(), allPaths
 	}
 	return "", nil, nil, nil
-}
-
-func prefixSuffix(prefix string) string {
-	if prefix == "" {
-		return ""
-	}
-	return fmt.Sprintf(" for path prefix %q", prefix)
 }
 
 // portKey is one thing a Ports matches: a port number, or every port. Its
@@ -220,6 +243,18 @@ func ValidateCustom_HTTPSRule_PathPrefixes(_ context.Context, _ operation.Operat
 	for i, prefix := range prefixes {
 		if !strings.HasPrefix(prefix, "/") || !strings.HasSuffix(prefix, "/") || strings.ContainsAny(prefix, "?#") {
 			errs = append(errs, field.Invalid(p.Index(i), prefix, `must start and end with "/" and contain no "?" or "#"`))
+		}
+	}
+	return errs
+}
+
+// ValidateCustom_HTTPSRule_Paths checks each entry with the rule the gateway
+// compiles with.
+func ValidateCustom_HTTPSRule_Paths(_ context.Context, _ operation.Operation, p *field.Path, paths, _ []string) field.ErrorList {
+	var errs field.ErrorList
+	for i, path := range paths {
+		if err := egresspolicy.CheckExactPath(path); err != nil {
+			errs = append(errs, field.Invalid(p.Index(i), path, err.Error()))
 		}
 	}
 	return errs

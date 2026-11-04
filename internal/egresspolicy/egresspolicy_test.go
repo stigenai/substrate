@@ -503,7 +503,8 @@ func TestEvaluateRequestPathPrefixes(t *testing.T) {
 		{"query is not part of the path", policy(all, zs), atPath("github.com", "/stigenai/x?next=/zach-source/"), 0},
 		{"prefix is matched as a prefix, not a segment", policy(all, zs), atPath("github.com", "/zach-source-evil/x"), 0},
 		{"prefix is not an owner name prefix", policy(all, zs), atPath("github.com", "/zach-sourcery/x"), 0},
-		{"a semicolon after dot-dot is not a dot segment", policy(all, zs), atPath("github.com", "/zach-source/..;/x"), 1},
+		{"a semicolon after dot-dot is denied", policy(all, zs), atPath("github.com", "/zach-source/..;/x"), -1},
+		{"an escaped space stays in the scoped rule", policy(all, zs), atPath("github.com", "/zach-source/a%20b"), 1},
 		{"a doubled leading slash is another path", policy(all, zs), atPath("github.com", "//zach-source/x"), 0},
 		{"git smart HTTP POST takes the scoped rule", policy(all, scopedHTTPSRule("github.com", "/o/")), atPath("github.com", "/o/r.git/git-upload-pack"), 1},
 		{"empty path matches no prefix", policy(all, zs), atPath("github.com", ""), 0},
@@ -544,6 +545,10 @@ func TestEvaluateRequestUnsafePaths(t *testing.T) {
 		"/stigenai%2Fx",
 		"/stigenai%5cx",
 		`/stigenai\..\zach-source/x`,
+		"/zach-source/..;/stigenai/x", "/stigenai/..;/zach-source/x", "/stigenai/..;x/y", "/zach-source;x/y", "/stigenai/x;jsessionid=1",
+		"/zach-source/%252e%252e/stigenai/x", "/stigenai/%252E%252E/zach-source/x", "/stigenai/%25/x", "/stigenai/%2525/x",
+		"/%7Ach-source/x", "/zach-%73ource/x", "/stigenai/a%2eb", "/stigenai/%7e", "/stigenai/%3b/x",
+		"/stigenai/%", "/stigenai/%4", "/stigenai/%zz/x", "/stigenai/%c0%ae%c0%ae/zach-source/x",
 	}
 	for _, path := range paths {
 		t.Run(path, func(t *testing.T) {
@@ -552,7 +557,8 @@ func TestEvaluateRequestUnsafePaths(t *testing.T) {
 			}
 		})
 	}
-	safe := []string{"/stigenai/x..y", "/stigenai/..x/y", "/stigenai/a.b/c", "/stigenai/x?p=../..", "/stigenai/x?p=%2f"}
+	safe := []string{"/stigenai/x..y", "/stigenai/..x/y", "/stigenai/a.b/c", "/stigenai/x?p=../..", "/stigenai/x?p=%2f",
+		"/stigenai/a%20b", "/stigenai/user%40example.com", "/stigenai/a%2Cb", "/stigenai/x%3Fy", "/stigenai/%E2%82%AC", "/stigenai/x?p=%252e%252e;.."}
 	for _, path := range safe {
 		t.Run("safe "+path, func(t *testing.T) {
 			if got := mustCompile(t, policy(all, zs)).EvaluateRequest(atPath("github.com", path), true); !got.Allowed || got.RuleIndex != 0 {
@@ -602,6 +608,7 @@ func TestCheckExactPath(t *testing.T) {
 	for _, path := range []string{
 		"", "a", "backend-api/x", "/a?x=1", "/a#x", "/a/../b", "/a/./b", "/a/..",
 		"/a/%2e%2e/b", "/a/%2E./b", "/a%2fb", "/a%2Fb", "/a%5cb", `/a\b`,
+		"/a;b", "/a/..;/b", "/a/%252e%252e/b", "/a%25b", "/a%41", "/a/%", "/a/%zz", "/a/%c0%ae",
 	} {
 		t.Run("reject "+path, func(t *testing.T) {
 			if err := CheckExactPath(path); err == nil {
@@ -611,7 +618,7 @@ func TestCheckExactPath(t *testing.T) {
 	}
 	for _, path := range []string{
 		"/", "/backend-api/wham/accounts/check", "/backend-api/codex/responses",
-		"/backend-api/codex/models", "/a/", "/a..b", "//a",
+		"/backend-api/codex/models", "/a/", "/a..b", "//a", "/a%20b", "/a%40b",
 	} {
 		t.Run("accept "+path, func(t *testing.T) {
 			if err := CheckExactPath(path); err != nil {

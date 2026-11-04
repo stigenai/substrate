@@ -124,8 +124,10 @@ rules:
 Each prefix must start and end with `/`. A request matches a prefix when its
 path, before any `?`, starts with it. No escape is decoded, and the match is
 case sensitive. The longest matching prefix decides. A request whose path
-has a `.` or `..` segment, an encoded dot, an encoded slash or a backslash is
-denied when a rule with prefixes covers its host and port, because the origin
+has a `.` or `..` segment, a `;`, a backslash, a malformed escape, an escape
+of a letter, digit, `-`, `.`, `_` or `~`, an escape of `%`, `/`, `\` or `;`
+(so `%2e`, `%2f`, `%5c`, `%3b` and `%25`), or an escape that decodes to
+invalid UTF-8 is denied when a rule with prefixes covers its host and port, because the origin
 could read it as a different path. Rules for one host and port must not share
 a prefix. The TLS connection is allowed when any `https` rule covers its
 server name, so a path that no rule covers is denied per request.
@@ -135,8 +137,9 @@ To allow one exact path, use `paths` in place of a prefix, for example
 before any `?`, equals an entry. No escape is decoded, and the match is case
 sensitive. An exact match beats any prefix. A rule can have both lists, and
 either one can match. Each entry must start with `/`. It must not hold `?`,
-`#`, a `.` or `..` segment, an encoded dot, an encoded slash or a backslash.
-The same rules deny an unsafe request path as for prefixes. Rules for one host
+`#`, `;`, a backslash, a `.` or `..` segment, a malformed escape, an escape of
+an unreserved byte or of `%`, `/`, `\` or `;`, or an escape that decodes to
+invalid UTF-8. Escapes such as `%20` and `%40` are allowed. The same rules deny an unsafe request path as for prefixes. Rules for one host
 and port must not share an exact path.
 
 Paths and path prefixes select which credential is sent. They are not an

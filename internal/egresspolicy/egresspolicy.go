@@ -28,9 +28,11 @@ import (
 	"math"
 	"net"
 	"net/netip"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"k8s.io/apimachinery/pkg/api/validate/content"
 
@@ -324,30 +326,55 @@ func (r compiledRule) matchPath(dest Destination) (int, bool) {
 }
 
 // unsafePath reports whether a server might resolve path to a different one
-// than the raw text a prefix is matched against: a "." or ".." segment, an
-// encoded dot or slash, or a backslash. Without this, "/other/../scoped/x"
-// would match a catch-all rule and carry its credential to a path that the
-// server reads as scoped. Such a path is denied rather than normalized, since
-// the gateway cannot know how the origin decodes it.
+// than the raw text a prefix is matched against. Such a path is denied rather
+// than normalized, since the gateway cannot know how the origin decodes it.
+// Without this, "/other/../scoped/x" would match a catch-all rule and carry its
+// credential to a path that the server reads as scoped. A path is safe only if:
+//   - it holds no backslash and no ";" (a path parameter, as in "..;x");
+//   - each "%" starts an escape of two hex digits;
+//   - no escape stands for an unreserved byte (letter, digit, "-._~"), "%",
+//     "/", "\" or ";", so one decode never makes a dot, a slash or a second
+//     escape, and "%252e" is denied;
+//   - the path decoded once is valid UTF-8 (this denies "%c0%ae"); and
+//   - no segment is "." or "..".
 func unsafePath(rawPath string) bool {
 	path, _, _ := strings.Cut(rawPath, "?")
-	path = strings.ToLower(path)
-	if strings.ContainsAny(path, "\\") || strings.Contains(path, "%2f") || strings.Contains(path, "%5c") {
+	if strings.ContainsAny(path, `\;`) {
+		return true
+	}
+	for i := 0; i < len(path); i++ {
+		if path[i] != '%' {
+			continue
+		}
+		if i+2 >= len(path) {
+			return true
+		}
+		b, err := strconv.ParseUint(path[i+1:i+3], 16, 8)
+		if err != nil || isUnreserved(byte(b)) || strings.IndexByte(`%/\;`, byte(b)) >= 0 {
+			return true
+		}
+		i += 2
+	}
+	if decoded, err := url.PathUnescape(path); err != nil || !utf8.ValidString(decoded) {
 		return true
 	}
 	for _, segment := range strings.Split(path, "/") {
-		if dots := strings.ReplaceAll(segment, "%2e", "."); dots == "." || dots == ".." {
+		if segment == "." || segment == ".." {
 			return true
 		}
 	}
 	return false
 }
 
+func isUnreserved(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '-' || b == '.' || b == '_' || b == '~'
+}
+
 // CheckExactPath reports why path cannot be an exact path of a rule: it must
 // start with "/", hold no "?" or "#", and not be unsafe (see unsafePath).
 func CheckExactPath(path string) error {
 	if !strings.HasPrefix(path, "/") || strings.ContainsAny(path, "?#") || unsafePath(path) {
-		return errors.New(`must start with "/" and contain no "?", "#", "." or ".." segment, "%2e", "%2f", "%5c" or backslash`)
+		return errors.New(`must start with "/" and contain no "?", "#", ";" or backslash, no "." or ".." segment, no malformed escape, no escape of a letter, digit, "-", ".", "_", "~", "%", "/", "\" or ";", and no escape that decodes to invalid UTF-8`)
 	}
 	return nil
 }

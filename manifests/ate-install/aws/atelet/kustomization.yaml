@@ -1,0 +1,77 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../atelet.yaml
+
+# S3 through IRSA. k0s keeps the kubelet under /var/lib/k0s/kubelet, so CSI
+# plugin sockets live there. Device plugins do not move: the kubelet
+# DevicePluginPath is a constant, /var/lib/kubelet/device-plugins. GCP registry
+# auth is off. The ate-registry-auth Secret (optional) authenticates private
+# registries.
+patches:
+  - patch: |-
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: atelet
+        namespace: ate-system
+        annotations:
+          eks.amazonaws.com/role-arn: ${ATE_ATELET_ROLE_ARN}
+  - patch: |-
+      apiVersion: apps/v1
+      kind: DaemonSet
+      metadata:
+        name: atelet-${SUBSTRATE_VERSION_SUFFIX}
+        namespace: ate-system
+      spec:
+        template:
+          spec:
+            containers:
+            - name: atelet
+              env:
+              - name: ATE_STORAGE_BACKEND
+                value: s3
+              - name: AWS_REGION
+                value: ${AWS_REGION}
+              - name: DOCKER_CONFIG
+                value: /run/registry-auth
+              volumeMounts:
+              - name: registry-auth
+                mountPath: /run/registry-auth
+                readOnly: true
+            volumes:
+            - name: registry-auth
+              secret:
+                secretName: ate-registry-auth
+                optional: true
+                items:
+                - key: .dockerconfigjson
+                  path: config.json
+            - name: kubelet-plugins
+              hostPath:
+                path: /var/lib/k0s/kubelet/plugins
+  - target:
+      kind: DaemonSet
+      name: atelet-.*
+    patch: |-
+      - op: test
+        path: /spec/template/spec/containers/0/args/0
+        value: --gcp-auth-for-image-pulls=true
+      - op: replace
+        path: /spec/template/spec/containers/0/args/0
+        value: --gcp-auth-for-image-pulls=false

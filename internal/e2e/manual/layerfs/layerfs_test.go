@@ -58,7 +58,14 @@ func TestLayerFS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CheckEnv failed: %v", err)
 	}
-	script, err := json.Marshal(runPy)
+	// The API limits each command element to 4096 characters, so run.py
+	// goes in as chunks that a short program joins again.
+	command := []string{"/usr/bin/python3", "-c", "import sys; exec(''.join(sys.argv[1:]))"}
+	for rest := runPy; rest != ""; {
+		n := min(len(rest), 4000)
+		command, rest = append(command, rest[:n]), rest[n:]
+	}
+	commandJSON, err := json.Marshal(command)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +74,7 @@ func TestLayerFS(t *testing.T) {
 	namespace, _ := e2e.DeploySubstrateFixture(t, ctx, clients, e2e.SubstrateFixtureManifests{
 		Pool:     "internal/e2e/fixtures/guestdevices/guestdevices.yaml.tmpl",
 		Template: "internal/e2e/manual/layerfs/layerfs-templates.yaml.tmpl",
-		Vars:     map[string]string{"${LAYERFS_IMAGE}": image, "${LAYERFS_RUN_PY}": string(script)},
+		Vars:     map[string]string{"${LAYERFS_IMAGE}": image, "${LAYERFS_COMMAND}": string(commandJSON)},
 	}, env["BUCKET_NAME"], "layerfs", false)
 
 	fuse := runActor(t, ctx, clients, namespace, "layerfs-fuse")

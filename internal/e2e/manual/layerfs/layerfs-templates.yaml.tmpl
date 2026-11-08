@@ -15,8 +15,8 @@
 # The LayerFS test's ActorTemplates: protojson-shaped ateapipb.ActorTemplate
 # documents. Both run run.py in the LayerFS spike image with SYS_ADMIN. They
 # differ only in the pool they select from the guestdevices pool manifest.
-# The test fills ${LAYERFS_IMAGE} (pinned by digest) and ${LAYERFS_RUN_PY}
-# (run.py as a JSON string).
+# The test fills the LAYERFS_IMAGE placeholder (pinned by digest) and the
+# LAYERFS_COMMAND placeholder (a JSON list that runs run.py).
 
 metadata:
   atespace: ate-e2e${FIXTURE_SUFFIX}
@@ -27,7 +27,7 @@ workerSelector:
 containers:
 - name: layerfs
   image: ${LAYERFS_IMAGE}
-  command: ["/usr/bin/python3", "-c", ${LAYERFS_RUN_PY}]
+  command: ${LAYERFS_COMMAND}
   securityContext:
     capabilities:
       add: ["SYS_ADMIN"]
@@ -52,7 +52,7 @@ workerSelector:
 containers:
 - name: layerfs
   image: ${LAYERFS_IMAGE}
-  command: ["/usr/bin/python3", "-c", ${LAYERFS_RUN_PY}]
+  command: ${LAYERFS_COMMAND}
   securityContext:
     capabilities:
       add: ["SYS_ADMIN"]

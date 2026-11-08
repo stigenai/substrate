@@ -16,6 +16,7 @@ package controllers
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -1055,6 +1056,36 @@ func TestBuildDeploymentApplyConfigLogsExporter(t *testing.T) {
 			got, ok := envByName(c.Env)["OTEL_LOGS_EXPORTER"]
 			if ok != (tt.want != "") || (ok && got.value != tt.want) {
 				t.Errorf("OTEL_LOGS_EXPORTER = %q (present %v), want %q", got.value, ok, tt.want)
+			}
+		})
+	}
+}
+
+func TestGuestDevicesFlag(t *testing.T) {
+	tests := []struct {
+		name  string
+		class atev1alpha1.SandboxClass
+		devs  []atev1alpha1.GuestDevice
+		want  bool
+	}{
+		{"microvm with fuse", atev1alpha1.SandboxClassMicroVM, []atev1alpha1.GuestDevice{atev1alpha1.GuestDeviceFUSE}, true},
+		{"microvm without devices", atev1alpha1.SandboxClassMicroVM, nil, false},
+		{"gvisor never gets the flag", atev1alpha1.SandboxClassGvisor, []atev1alpha1.GuestDevice{atev1alpha1.GuestDeviceFUSE}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wp := testWorkerPoolApplyConfig(nil)
+			wp.Spec.SandboxClass = tt.class
+			wp.Spec.GuestDevices = tt.devs
+			args := buildDeploymentApplyConfig(wp, ateomOTelSettings{}, installdefaults.SystemNamespace, installdefaults.AteletServiceAccount, installdefaults.RouterServiceAccount).Spec.Template.Spec.Containers[0].Args
+			got := slices.Contains(args, "--guest-devices=fuse")
+			if got != tt.want {
+				t.Errorf("--guest-devices=fuse in args = %v, want %v; args = %v", got, tt.want, args)
+			}
+			for _, a := range args {
+				if !tt.want && strings.HasPrefix(a, "--guest-devices") {
+					t.Errorf("unexpected arg %q", a)
+				}
 			}
 		})
 	}

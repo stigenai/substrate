@@ -194,6 +194,36 @@ func TestWorkerPoolValidation(t *testing.T) {
 			wp.Spec.Template = gpuTemplate(corev1.ResourceList{gpuResourceName: resource.MustParse("1")}, nil)
 		},
 		wantErr: false,
+	}, {
+		name: "fuse guest device on a microvm pool",
+		mutate: func(wp *WorkerPool) {
+			wp.Spec.SandboxClass = SandboxClassMicroVM
+			wp.Spec.GuestDevices = []GuestDevice{GuestDeviceFUSE}
+		},
+		wantErr: false,
+	}, {
+		name: "guest device on a gvisor pool",
+		mutate: func(wp *WorkerPool) {
+			wp.Spec.SandboxClass = SandboxClassGvisor
+			wp.Spec.GuestDevices = []GuestDevice{GuestDeviceFUSE}
+		},
+		wantErr: true,
+		errMsg:  "guestDevices requires sandboxClass microvm",
+	}, {
+		name: "guest device on a pool with the default class",
+		mutate: func(wp *WorkerPool) {
+			wp.Spec.GuestDevices = []GuestDevice{GuestDeviceFUSE}
+		},
+		wantErr: true,
+		errMsg:  "guestDevices requires sandboxClass microvm",
+	}, {
+		name: "guest device not in the allowlist",
+		mutate: func(wp *WorkerPool) {
+			wp.Spec.SandboxClass = SandboxClassMicroVM
+			wp.Spec.GuestDevices = []GuestDevice{"kvm"}
+		},
+		wantErr: true,
+		errMsg:  "spec.guestDevices[0]: Unsupported value",
 	}}
 
 	for _, tt := range tests {

@@ -122,17 +122,38 @@ func runActor(t *testing.T, ctx context.Context, clients *e2e.Clients, namespace
 		t.Fatalf("NewRouterClient: %v", err)
 	}
 	defer rc.Close()
+	actor := resources.ActorRef{Atespace: namespace, Name: ref.Name}
+	get := func(path string) (int, []byte) {
+		resp, err := rc.Get(ctx, actor, path)
+		if err != nil {
+			t.Fatalf("GET %s for %q: %v", path, ref.Name, err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, body
+	}
+	// The test runs longer than one request can wait, so run.py runs it in
+	// the background and the test polls for the result.
 	start = time.Now()
-	resp, err := rc.Get(ctx, resources.ActorRef{Atespace: namespace, Name: ref.Name}, "/run")
-	if err != nil {
-		t.Fatalf("GET /run for %q: %v", ref.Name, err)
+	if code, body := get("/run"); code != http.StatusOK {
+		t.Fatalf("GET /run for %q: status %d, body %q", ref.Name, code, body)
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	var body []byte
+	for {
+		code, b := get("/result")
+		body = b
+		if code == http.StatusOK {
+			break
+		}
+		if code != http.StatusAccepted {
+			t.Fatalf("GET /result for %q: status %d, body %q", ref.Name, code, b)
+		}
+		if time.Since(start) > 15*time.Minute {
+			t.Fatalf("GET /result for %q: not done after 15m; output so far:\n%s", ref.Name, b)
+		}
+		time.Sleep(2 * time.Second)
+	}
 	r.run = time.Since(start)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /run for %q: status %d, body %q", ref.Name, resp.StatusCode, body)
-	}
 	r.raw = string(body)
 	t.Logf("GET /run for %q:\n%s", ref.Name, body)
 	r.kv, r.firstPass, r.warmPass = parse(r.raw)

@@ -12,14 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# The LayerFS actor. It serves /healthz for the wakeup probe. GET /run runs
-# the LayerFS test once in the actor and returns its output as text/plain.
+# The LayerFS actor. It serves /healthz for the wakeup probe. GET /run starts
+# the LayerFS test once in the background. GET /result returns its output as
+# text/plain: status 202 while the test runs, 200 when it is done.
 # The test seals a store from a sample tree (ax_probe init), mounts it twice
 # (the first mount installs the store, the second is warm), reads files and
 # writes in the overlay. Lines that start with RESULT or AX_PROBE carry the
 # results.
 import http.server
 import subprocess
+import threading
+
+LOG = "/tmp/layerfs-run.log"
+lock = threading.Lock()
+proc = None
 
 TEST = r'''
 set -u
@@ -52,14 +58,28 @@ step mount_warm "$BIN/ax_probe" mount "$W/state" "$BIN/layerfs-daemon" 1001 "$CM
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        global proc
+        code = 200
         if self.path == "/healthz":
             body = b"ok\n"
         elif self.path == "/run":
-            body = subprocess.run(["bash", "-c", TEST], capture_output=True).stdout
+            with lock:
+                if proc is None:
+                    proc = subprocess.Popen(["bash", "-c", TEST], stdout=open(LOG, "wb"), stderr=subprocess.STDOUT)
+            body = b"started\n"
+        elif self.path == "/result":
+            with lock:
+                if proc is None:
+                    self.send_error(409, "GET /run first")
+                    return
+                if proc.poll() is None:
+                    code = 202
+            with open(LOG, "rb") as f:
+                body = f.read()
         else:
             self.send_error(404)
             return
-        self.send_response(200)
+        self.send_response(code)
         self.send_header("Content-Type", "text/plain")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()

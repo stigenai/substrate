@@ -148,8 +148,11 @@ func runActor(t *testing.T, ctx context.Context, clients *e2e.Clients, namespace
 		if code != http.StatusAccepted {
 			t.Fatalf("GET /result for %q: status %d, body %q", ref.Name, code, b)
 		}
-		if time.Since(start) > 15*time.Minute {
-			t.Fatalf("GET /result for %q: not done after 15m; output so far:\n%s", ref.Name, b)
+		// run.py limits each step to 90s, so this is a safety net. The
+		// partial output still goes into the summary.
+		if time.Since(start) > 20*time.Minute {
+			t.Errorf("GET /result for %q: not done after 20m", ref.Name)
+			break
 		}
 		time.Sleep(2 * time.Second)
 	}
@@ -168,9 +171,9 @@ func parse(out string) (kv, first, warm map[string]string) {
 		tag, rest, _ := strings.Cut(strings.TrimSpace(line), " ")
 		into := kv
 		switch {
-		case tag == "AX_PROBE" && strings.Contains(rest, "warm=true"):
+		case tag == "AX_PROBE" && strings.HasPrefix(rest, "warm=true "):
 			into = warm
-		case tag == "AX_PROBE" && strings.Contains(rest, "warm=false"):
+		case tag == "AX_PROBE" && strings.HasPrefix(rest, "warm=false "):
 			into = first
 		case tag != "AX_PROBE" && tag != "RESULT":
 			continue
@@ -210,6 +213,10 @@ func writeSummary(t *testing.T, fuse, nofuse result) {
 		{"Warm mount: read and write command (s)", or(fuse.warmPass["command_s"]), or(nofuse.warmPass["command_s"])},
 		{"Files read in the mount", or(fuse.kv["read_files"]), or(nofuse.kv["read_files"])},
 		{"Write in the overlay", or(fuse.kv["overlay_write"]), or(nofuse.kv["overlay_write"])},
+		{"Work dir of the rows above", or(fuse.kv["workdir"]), or(nofuse.kv["workdir"])},
+		{"Rootfs work dir: init", or(fuse.kv["rootfs_init"]), or(nofuse.kv["rootfs_init"])},
+		{"Rootfs work dir: first mount", or(fuse.kv["rootfs_mount_first"]), or(nofuse.kv["rootfs_mount_first"])},
+		{"Rootfs work dir: warm mount", or(fuse.kv["rootfs_mount_warm"]), or(nofuse.kv["rootfs_mount_warm"])},
 		{"Whole test in the actor (s)", fmt.Sprintf("%.2f", fuse.run.Seconds()), fmt.Sprintf("%.2f", nofuse.run.Seconds())},
 	}
 	var b strings.Builder

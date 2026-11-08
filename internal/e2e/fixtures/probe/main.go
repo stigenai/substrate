@@ -456,6 +456,7 @@ func main() {
 	mux.HandleFunc("/writefile", writefile)
 	mux.HandleFunc("/resources", resources)
 	mux.HandleFunc("/capabilities", capabilities)
+	mux.HandleFunc("/fuse", fuseProbe)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 
 	const addr = ":80"

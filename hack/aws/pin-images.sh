@@ -27,7 +27,7 @@ ROOT="$(git rev-parse --show-toplevel)"
 OUT="${ROOT}/manifests/ate-install/aws/images/kustomization.yaml"
 
 {
-  sed -n '3,14p' "${BASH_SOURCE[0]}"
+  sed -n '3,15p' "${BASH_SOURCE[0]}"
   echo
   echo "apiVersion: kustomize.config.k8s.io/v1alpha1"
   echo "kind: Component"

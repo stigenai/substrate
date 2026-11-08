@@ -1,0 +1,67 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The LayerFS test's ActorTemplates: protojson-shaped ateapipb.ActorTemplate
+# documents. Both run run.py in the LayerFS spike image with SYS_ADMIN. They
+# differ only in the pool they select from the guestdevices pool manifest.
+# The test fills ${LAYERFS_IMAGE} (pinned by digest) and ${LAYERFS_RUN_PY}
+# (run.py as a JSON string).
+
+metadata:
+  atespace: ate-e2e${FIXTURE_SUFFIX}
+  name: layerfs-fuse
+workerSelector:
+  matchLabels:
+    workload: guestdevices-fuse
+containers:
+- name: layerfs
+  image: ${LAYERFS_IMAGE}
+  command: ["/usr/bin/python3", "-c", ${LAYERFS_RUN_PY}]
+  securityContext:
+    capabilities:
+      add: ["SYS_ADMIN"]
+  wakeupProbe:
+    httpGet:
+      path: /healthz
+      port: 80
+    timeoutSeconds: 60
+${TEMPLATE_RESOURCES}
+${TEMPLATE_SANDBOX_CONFIG}
+snapshotConfig:
+  storageLocation: gs://${BUCKET_NAME}/ate-e2e-layerfs-fuse${FIXTURE_SUFFIX}/
+
+---
+
+metadata:
+  atespace: ate-e2e${FIXTURE_SUFFIX}
+  name: layerfs-nofuse
+workerSelector:
+  matchLabels:
+    workload: guestdevices-nofuse
+containers:
+- name: layerfs
+  image: ${LAYERFS_IMAGE}
+  command: ["/usr/bin/python3", "-c", ${LAYERFS_RUN_PY}]
+  securityContext:
+    capabilities:
+      add: ["SYS_ADMIN"]
+  wakeupProbe:
+    httpGet:
+      path: /healthz
+      port: 80
+    timeoutSeconds: 60
+${TEMPLATE_RESOURCES}
+${TEMPLATE_SANDBOX_CONFIG}
+snapshotConfig:
+  storageLocation: gs://${BUCKET_NAME}/ate-e2e-layerfs-nofuse${FIXTURE_SUFFIX}/

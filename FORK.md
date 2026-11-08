@@ -29,3 +29,21 @@ The operator turns the device on with a WorkerPool field. The micro-VM worker ad
 ### Removal condition
 
 Remove the patch when upstream merges it. Also remove it if upstream adds a different device API for micro-VM actors.
+
+## LayerFS test on micro-VM actors
+
+**Upstream status:** `fork-only`
+
+### Files
+
+- `.github/workflows/layerfs-e2e.yaml` (new)
+- `internal/e2e/manual/layerfs/` (new)
+- `internal/e2e/fixture.go`: the `Vars` field on `SubstrateFixtureManifests`
+
+### Reason
+
+The test runs the stigenai LayerFS spike image, so it stays in the fork. The `Vars` field lets a fixture take a value that only the workflow knows, such as an image digest. It is a small edit to an upstream file. Without it, the test must copy the fixture deploy code.
+
+### Removal condition
+
+Remove the test when LayerFS has its own micro-VM test. Remove `Vars` with it, unless an upstream change uses it.

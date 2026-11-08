@@ -16,6 +16,7 @@ package e2e
 
 import (
 	"context"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -103,6 +104,9 @@ type SubstrateFixtureManifests struct {
 	// Template declares one or more protojson-shaped ActorTemplate
 	// documents, separated by ---.
 	Template string
+	// Vars are extra inline placeholders, such as "${IMAGE}", for both
+	// manifests.
+	Vars map[string]string
 }
 
 // DeploySubstrateFixture installs a fixture for the sandbox class under test:
@@ -127,6 +131,7 @@ func DeploySubstrateFixture(t *testing.T, ctx context.Context, clients *Clients,
 	// first so it runs last (t.Cleanup is LIFO), after the templates that
 	// select the pool's workers are gone.
 	inline, blocks := fixtureSubstitutions(bucket, name)
+	maps.Copy(inline, manifests.Vars)
 	poolManifest := renderManifest(t, manifests.Pool, inline, blocks)
 	koApply(t, poolManifest)
 	t.Cleanup(func() {
@@ -138,6 +143,7 @@ func DeploySubstrateFixture(t *testing.T, ctx context.Context, clients *Clients,
 	})
 
 	tmplInline, tmplBlocks := substrateTemplateSubstitutions(bucket, name, trustBundle)
+	maps.Copy(tmplInline, manifests.Vars)
 	rendered := koResolve(t, renderManifest(t, manifests.Template, tmplInline, tmplBlocks))
 	templates := decodeSubstrateTemplates(t, rendered)
 

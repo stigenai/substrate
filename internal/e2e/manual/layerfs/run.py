@@ -82,9 +82,9 @@ step() {
   grep -E '^(RESULT|AX_PROBE) ' "$out" | sed "s/ \([a-z_]*=\)/ ${P}\1/g"
   grep -vE '^(RESULT|AX_PROBE) |^\s*$' "$out" | tail -15 | sed "s/^/LOG ${P}${name}: /"
   if [ $rc -eq 124 ]; then
-    echo "RESULT ${P}${name}=failed: no_exit_after_${STEP_TIMEOUT}s"
+    echo "RESULT ${P}${name}=failed:_no_exit_after_${STEP_TIMEOUT}s"
   elif [ $rc -ne 0 ]; then
-    echo "RESULT ${P}${name}=failed: $(grep -vE '^(RESULT|AX_PROBE) |^\s*$|RUST_BACKTRACE' "$out" | head -1 | tr ' ' _)"
+    echo "RESULT ${P}${name}=failed:_$(grep -vE '^(RESULT|AX_PROBE) |^\s*$|RUST_BACKTRACE' "$out" | head -1 | tr ' ' _)"
   else
     echo "RESULT ${P}${name}=ok"
   fi

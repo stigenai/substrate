@@ -222,6 +222,7 @@ func writeSummary(t *testing.T, fuse, nofuse result) {
 		{"Write in the overlay", or(fuse.kv["overlay_write"]), or(nofuse.kv["overlay_write"])},
 		{"Work dir of the rows above", or(fuse.kv["workdir"]), or(nofuse.kv["workdir"])},
 		{"Rootfs work dir: init", or(fuse.kv["rootfs_init"]), or(nofuse.kv["rootfs_init"])},
+		{"Rootfs work dir: init (s)", or(fuse.kv["rootfs_init_s"]), or(nofuse.kv["rootfs_init_s"])},
 		{"Rootfs work dir: first mount", or(fuse.kv["rootfs_mount_first"]), or(nofuse.kv["rootfs_mount_first"])},
 		{"Rootfs work dir: warm mount", or(fuse.kv["rootfs_mount_warm"]), or(nofuse.kv["rootfs_mount_warm"])},
 		{"Whole test in the actor (s)", fmt.Sprintf("%.2f", fuse.run.Seconds()), fmt.Sprintf("%.2f", nofuse.run.Seconds())},

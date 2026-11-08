@@ -631,7 +631,7 @@ func (s *AteomService) buildActorContainers(actorDirs *ateompb.ActorDirs, contai
 		if err != nil {
 			return nil, fmt.Errorf("while reading the OCI spec for %q: %w", cn, err)
 		}
-		if err := ocispec.ShapeMicroVM(spec, ocispec.MicroVMOptions{ActorDirs: actorDirs, ContainerID: cn}); err != nil {
+		if err := ocispec.ShapeMicroVM(spec, ocispec.MicroVMOptions{ActorDirs: actorDirs, ContainerID: cn, GuestDevices: s.guestDevices}); err != nil {
 			return nil, fmt.Errorf("while shaping the OCI spec for %q: %w", cn, err)
 		}
 		// Compose the bundle rootfs from the node's cached image layers (an

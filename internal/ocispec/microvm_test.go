@@ -152,3 +152,53 @@ func TestShapeMicroVM_LeavesUndeclaredContainerUnlimited(t *testing.T) {
 		t.Errorf("cpu quota = %d, want unset for a container that declared none", *c.Quota)
 	}
 }
+
+func TestShapeMicroVM_GuestDeviceFUSE(t *testing.T) {
+	spec := Build(Options{Args: []string{"/app"}})
+	if err := ShapeMicroVM(spec, MicroVMOptions{ActorDirs: parityActorDirs, ContainerID: "app", GuestDevices: []string{"fuse"}}); err != nil {
+		t.Fatalf("ShapeMicroVM() = %v", err)
+	}
+
+	if len(spec.Linux.Devices) != 1 {
+		t.Fatalf("Linux.Devices = %+v, want /dev/fuse only", spec.Linux.Devices)
+	}
+	d := spec.Linux.Devices[0]
+	if d.Path != "/dev/fuse" || d.Type != "c" || d.Major != 10 || d.Minor != 229 {
+		t.Errorf("Linux.Devices[0] = %+v, want /dev/fuse c 10:229", d)
+	}
+	// The default deny rule comes first, so the allow rule must follow it.
+	rules := spec.Linux.Resources.Devices
+	last := rules[len(rules)-1]
+	if !last.Allow || last.Type != "c" || !eqInt64Ptr(last.Major, new(int64(10))) || !eqInt64Ptr(last.Minor, new(int64(229))) || last.Access != "rwm" {
+		t.Errorf("last device cgroup rule = %+v, want allow c 10:229 rwm", last)
+	}
+	if rules[0].Allow {
+		t.Errorf("first device cgroup rule = %+v, want the default deny", rules[0])
+	}
+}
+
+func TestShapeMicroVM_NoGuestDevicesByDefault(t *testing.T) {
+	spec := Build(Options{Args: []string{"/app"}})
+	if err := ShapeMicroVM(spec, MicroVMOptions{ActorDirs: parityActorDirs, ContainerID: "app"}); err != nil {
+		t.Fatalf("ShapeMicroVM() = %v", err)
+	}
+	if len(spec.Linux.Devices) != 0 {
+		t.Errorf("Linux.Devices = %+v, want none", spec.Linux.Devices)
+	}
+	assertDefaultDeviceAllowlist(t, spec.Linux.Resources.Devices)
+}
+
+func TestGuestDevicesAllowlist(t *testing.T) {
+	if err := ValidateGuestDevices([]string{"fuse"}); err != nil {
+		t.Errorf("ValidateGuestDevices(fuse) = %v, want nil", err)
+	}
+	for _, bad := range []string{"kvm", "/dev/fuse", ""} {
+		if err := ValidateGuestDevices([]string{bad}); err == nil {
+			t.Errorf("ValidateGuestDevices(%q) = nil, want an error", bad)
+		}
+		spec := Build(Options{Args: []string{"/app"}})
+		if err := ShapeMicroVM(spec, MicroVMOptions{ActorDirs: parityActorDirs, ContainerID: "app", GuestDevices: []string{bad}}); err == nil {
+			t.Errorf("ShapeMicroVM(%q) = nil, want an error", bad)
+		}
+	}
+}

@@ -48,6 +48,7 @@ import (
 	"github.com/agent-substrate/substrate/internal/atunnel"
 	"github.com/agent-substrate/substrate/internal/installdefaults"
 	"github.com/agent-substrate/substrate/internal/nodepath"
+	"github.com/agent-substrate/substrate/internal/ocispec"
 	"github.com/agent-substrate/substrate/internal/otlprelay"
 	"github.com/agent-substrate/substrate/internal/proto/ateompb"
 	"github.com/agent-substrate/substrate/internal/resources"
@@ -85,6 +86,7 @@ var (
 	egressGatewayTrustBundle    = flag.String("atunnel-egress-trust-bundle", "/run/servicedns.podcert.ate.dev/trust-bundle.pem", "Service DNS trust bundle for the remote egress gateway")
 	readinessListenAddress      = flag.String("readiness-listen-address", "0.0.0.0:8080", "Address for HTTP readiness checks")
 	maxActors                   = flag.Int("max-actors", 1000, "How many actors this worker will host at once")
+	guestDevices                = flag.String("guest-devices", "", "Comma-separated device nodes to create in each guest container, from a fixed allowlist (fuse).")
 )
 
 const (
@@ -120,6 +122,13 @@ func do(ctx context.Context) error {
 	slog.InfoContext(ctx, "ateom-microvm booting", slog.String("version", version.Version))
 	if *maxActors < 0 {
 		return fmt.Errorf("--max-actors must not be negative, got %d", *maxActors)
+	}
+	var guestDeviceList []string
+	if *guestDevices != "" {
+		guestDeviceList = strings.Split(*guestDevices, ",")
+	}
+	if err := ocispec.ValidateGuestDevices(guestDeviceList); err != nil {
+		return fmt.Errorf("--guest-devices: %w", err)
 	}
 
 	const serviceName = "ateom-microvm"
@@ -250,6 +259,7 @@ func do(ctx context.Context) error {
 
 	ateomService := NewService(*podUID, *chBinary, *kataDebug, *vmmMemReserve, *maxActors, dnsRelay, actorLogger, *workerCredentialBundle, *podIdentityTrustBundle, *egressGatewayTrustBundle, *ateletIdentity)
 	ateomService.actorCgroups = actorCgroups
+	ateomService.guestDevices = guestDeviceList
 
 	atunnelIngress, err := atunnel.NewServer(atunnel.Config{
 		CredentialBundlePath: *workerCredentialBundle,
@@ -401,6 +411,9 @@ type AteomService struct {
 	podUID    string
 	chBinary  string
 	kataDebug bool
+	// guestDevices names the allowlisted device nodes to create in each guest
+	// container. Set from --guest-devices.
+	guestDevices []string
 
 	// memReserveMiB is guest RAM (MiB) held back from the pod's memory limit for
 	// the cloud-hypervisor VMM + virtiofsd (host processes sharing the pod cgroup

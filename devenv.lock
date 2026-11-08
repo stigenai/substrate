@@ -1,0 +1,84 @@
+{
+  "nodes": {
+    "devenv": {
+      "locked": {
+        "dir": "src/modules",
+        "lastModified": 1790274448,
+        "narHash": "sha256-MCSbrGsgWXod/Qzk4v5tYO/fev1d5OcEGZ2vzVAvMfQ=",
+        "ref": "refs/tags/v2.4.0",
+        "rev": "b904dcb51fe48c30db250038241507f60752f222",
+        "shallow": true,
+        "type": "git",
+        "url": "https://github.com/cachix/devenv"
+      },
+      "original": {
+        "dir": "src/modules",
+        "ref": "refs/tags/v2.4.0",
+        "shallow": true,
+        "type": "git",
+        "url": "https://github.com/cachix/devenv"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1788303326,
+        "narHash": "sha256-LHQFfZrRUk4QlxbKwBOhIbOO6MBlY6bIgHtrZX2iAvk=",
+        "ref": "refs/heads/master",
+        "rev": "6b9ce505e512688311fe820fc6493f39fe78dbc3",
+        "shallow": true,
+        "type": "git",
+        "url": "https://github.com/NixOS/nixpkgs"
+      },
+      "original": {
+        "rev": "6b9ce505e512688311fe820fc6493f39fe78dbc3",
+        "shallow": true,
+        "type": "git",
+        "url": "https://github.com/NixOS/nixpkgs"
+      }
+    },
+    "nixpkgs-shellcheck": {
+      "locked": {
+        "lastModified": 1720535198,
+        "narHash": "sha256-zwVvxrdIzralnSbcpghA92tWu2DV2lwv89xZc8MTrbg=",
+        "ref": "refs/heads/master",
+        "rev": "205fd4226592cc83fd4c0885a3e4c9c400efabb5",
+        "shallow": true,
+        "type": "git",
+        "url": "https://github.com/NixOS/nixpkgs"
+      },
+      "original": {
+        "rev": "205fd4226592cc83fd4c0885a3e4c9c400efabb5",
+        "shallow": true,
+        "type": "git",
+        "url": "https://github.com/NixOS/nixpkgs"
+      }
+    },
+    "nixpkgs-unstable": {
+      "locked": {
+        "lastModified": 1793876309,
+        "narHash": "sha256-Wojg9lIH/hDH91iDVH2/EPw8oDSpxjxhXONbU1yf4Zg=",
+        "ref": "refs/heads/master",
+        "rev": "f9a75f41be3a74eab55d3a7679d34ad6cc0da977",
+        "shallow": true,
+        "type": "git",
+        "url": "https://github.com/NixOS/nixpkgs"
+      },
+      "original": {
+        "rev": "f9a75f41be3a74eab55d3a7679d34ad6cc0da977",
+        "shallow": true,
+        "type": "git",
+        "url": "https://github.com/NixOS/nixpkgs"
+      }
+    },
+    "root": {
+      "inputs": {
+        "devenv": "devenv",
+        "nixpkgs": "nixpkgs",
+        "nixpkgs-shellcheck": "nixpkgs-shellcheck",
+        "nixpkgs-unstable": "nixpkgs-unstable"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}

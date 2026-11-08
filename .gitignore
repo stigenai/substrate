@@ -71,3 +71,8 @@ Thumbs.db
 /cmd/benchmarking/isolate/fake-atelet/fake-atelet
 /cmd/benchmarking/isolate/fake-workersync/fake-workersync
 /demos/claude-code-multiplex/ui/ui-server
+.scratch/
+/.devenv/
+/.devenv.flake.nix
+/.direnv/
+/devenv.local.nix

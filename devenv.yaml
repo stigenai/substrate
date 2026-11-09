@@ -1,0 +1,23 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+inputs:
+  nixpkgs:
+    url: git+https://github.com/NixOS/nixpkgs?rev=6b9ce505e512688311fe820fc6493f39fe78dbc3&shallow=1
+  nixpkgs-shellcheck:
+    url: git+https://github.com/NixOS/nixpkgs?rev=205fd4226592cc83fd4c0885a3e4c9c400efabb5&shallow=1
+  nixpkgs-unstable:
+    url: git+https://github.com/NixOS/nixpkgs?rev=f9a75f41be3a74eab55d3a7679d34ad6cc0da977&shallow=1
+  devenv:
+    url: git+https://github.com/cachix/devenv?dir=src/modules&ref=refs/tags/v2.4.0&shallow=1

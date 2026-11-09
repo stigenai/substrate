@@ -69,3 +69,8 @@ Thumbs.db
 
 # Substrate agent workspace scratchpads
 .agents/scratch/
+.scratch/
+/.devenv/
+/.devenv.flake.nix
+/.direnv/
+/devenv.local.nix

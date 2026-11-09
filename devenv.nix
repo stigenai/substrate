@@ -16,14 +16,29 @@
 let
   shellcheckPkgs = import inputs.nixpkgs-shellcheck { system = pkgs.stdenv.hostPlatform.system; };
   unstablePkgs = import inputs.nixpkgs-unstable { system = pkgs.stdenv.hostPlatform.system; };
+  rustPkgs = import inputs.nixpkgs-rust { system = pkgs.stdenv.hostPlatform.system; };
 in
 {
+  # Rust links with the same glibc as libclang, which bindgen loads at build time.
+  # CLANG_PATH and the linker are set here because clang or its cc on PATH would shadow gcc for Go.
+  env = {
+    LIBCLANG_PATH = "${rustPkgs.llvmPackages_18.libclang.lib}/lib";
+    CLANG_PATH = "${rustPkgs.llvmPackages_18.clang}/bin/clang";
+    "CARGO_TARGET_${rustPkgs.stdenv.hostPlatform.rust.cargoEnvVarTarget}_LINKER" = "${rustPkgs.stdenv.cc}/bin/cc";
+  };
+
   packages =
     assert pkgs.go_1_27.version == "1.27.0";
     assert pkgs.golangci-lint.version == "2.13.2";
     assert shellcheckPkgs.shellcheck.version == "0.9.0";
     assert unstablePkgs.weaver.version == "0.25.1";
+    assert rustPkgs.rustc.version == "1.99.1";
+    assert rustPkgs.cargo.version == "1.99.1";
+    assert rustPkgs.llvmPackages_18.clang.version == "18.1.8";
+    assert rustPkgs.llvmPackages_18.libclang.version == "18.1.8";
     [
+      rustPkgs.cargo
+      rustPkgs.rustc
       pkgs.go_1_27
       pkgs.golangci-lint
       pkgs.govulncheck

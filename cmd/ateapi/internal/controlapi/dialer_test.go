@@ -24,6 +24,7 @@ import (
 	"errors"
 	"math/big"
 	"net/url"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,6 +32,7 @@ import (
 	"github.com/agent-substrate/substrate/internal/substratex509"
 	"github.com/spiffe/go-spiffe/v2/bundle/x509bundle"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -379,6 +381,180 @@ func TestDialForAteletOnNode(t *testing.T) {
 
 		if got := first.GetState(); got != connectivity.Shutdown {
 			t.Errorf("evicted conn state = %v, want %v (closed on eviction)", got, connectivity.Shutdown)
+		}
+	})
+
+	newDialer := func(idx cache.Indexer, uids *[]string) *AteletDialer {
+		return NewAteletDialer(idx, installdefaults.AteletSPIFFEID(installdefaults.SystemNamespace), "", "", WithDialCredentials(func(uid string) (credentials.TransportCredentials, error) {
+			if uids != nil {
+				*uids = append(*uids, uid)
+			}
+			return insecure.NewCredentials(), nil
+		}))
+	}
+	mustDial := func(t *testing.T, d *AteletDialer, node string) *grpc.ClientConn {
+		t.Helper()
+		conn, err := d.DialForAteletOnNode(node)
+		if err != nil {
+			t.Fatalf("DialForAteletOnNode(%s): %v", node, err)
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		return conn
+	}
+	wantShutdown := func(t *testing.T, conn *grpc.ClientConn) {
+		t.Helper()
+		if got := conn.GetState(); got != connectivity.Shutdown {
+			t.Errorf("old conn state = %v, want %v", got, connectivity.Shutdown)
+		}
+	}
+
+	t.Run("redials when the atelet pod IP changes under the same UID", func(t *testing.T) {
+		idx := newTestAteletIndexer(t, ateletPod("atelet-1", "uid-1", "node1", "10.0.0.1"))
+		var uids []string
+		d := newDialer(idx, &uids)
+		conn1 := mustDial(t, d, "node1")
+		if got := conn1.Target(); got != "10.0.0.1:8085" {
+			t.Fatalf("conn1 target = %q", got)
+		}
+		if err := idx.Update(ateletPod("atelet-1", "uid-1", "node1", "10.0.0.9")); err != nil {
+			t.Fatal(err)
+		}
+		conn2 := mustDial(t, d, "node1")
+		if conn2 == conn1 {
+			t.Fatal("got the cached conn after an IP change")
+		}
+		if got := conn2.Target(); got != "10.0.0.9:8085" {
+			t.Errorf("conn2 target = %q, want 10.0.0.9:8085", got)
+		}
+		wantShutdown(t, conn1)
+		if len(uids) != 2 || uids[0] != "uid-1" || uids[1] != "uid-1" {
+			t.Errorf("credential UIDs = %v, want [uid-1 uid-1]", uids)
+		}
+	})
+
+	t.Run("redials when the atelet pod is replaced", func(t *testing.T) {
+		old := ateletPod("atelet-1", "uid-1", "node1", "10.0.0.1")
+		idx := newTestAteletIndexer(t, old)
+		var uids []string
+		d := newDialer(idx, &uids)
+		conn1 := mustDial(t, d, "node1")
+		if err := idx.Delete(old); err != nil {
+			t.Fatal(err)
+		}
+		if err := idx.Add(ateletPod("atelet-2", "uid-2", "node1", "10.0.0.2")); err != nil {
+			t.Fatal(err)
+		}
+		conn2 := mustDial(t, d, "node1")
+		if got := conn2.Target(); got != "10.0.0.2:8085" {
+			t.Errorf("conn2 target = %q, want 10.0.0.2:8085", got)
+		}
+		if len(uids) != 2 || uids[1] != "uid-2" {
+			t.Errorf("credential UIDs = %v, want second uid-2", uids)
+		}
+		wantShutdown(t, conn1)
+	})
+
+	t.Run("redials with the new UID when the pod is replaced at the same IP", func(t *testing.T) {
+		idx := newTestAteletIndexer(t, ateletPod("atelet-1", "uid-1", "node1", "10.0.0.1"))
+		var uids []string
+		d := newDialer(idx, &uids)
+		conn1 := mustDial(t, d, "node1")
+		if err := idx.Update(ateletPod("atelet-1", "uid-2", "node1", "10.0.0.1")); err != nil {
+			t.Fatal(err)
+		}
+		conn2 := mustDial(t, d, "node1")
+		if conn2 == conn1 {
+			t.Fatal("got the cached conn after a UID change")
+		}
+		if len(uids) != 2 || uids[1] != "uid-2" {
+			t.Errorf("credential UIDs = %v, want second uid-2", uids)
+		}
+		wantShutdown(t, conn1)
+	})
+
+	t.Run("closes the conn when the node has no atelet", func(t *testing.T) {
+		pod := ateletPod("atelet-1", "uid-1", "node1", "10.0.0.1")
+		idx := newTestAteletIndexer(t, pod)
+		d := newDialer(idx, nil)
+		conn1 := mustDial(t, d, "node1")
+		if err := idx.Delete(pod); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := d.DialForAteletOnNode("node1"); !errors.Is(err, ErrNoAteletOnNode) {
+			t.Fatalf("DialForAteletOnNode = %v, want ErrNoAteletOnNode", err)
+		}
+		wantShutdown(t, conn1)
+	})
+
+	t.Run("IP change on one node keeps other nodes' conns", func(t *testing.T) {
+		idx := newTestAteletIndexer(t,
+			ateletPod("atelet-1", "uid-1", "node1", "10.0.0.1"),
+			ateletPod("atelet-2", "uid-2", "node2", "10.0.0.2"),
+		)
+		d := newDialer(idx, nil)
+		mustDial(t, d, "node1")
+		conn2 := mustDial(t, d, "node2")
+		if err := idx.Update(ateletPod("atelet-1", "uid-1", "node1", "10.0.0.9")); err != nil {
+			t.Fatal(err)
+		}
+		mustDial(t, d, "node1")
+		if again := mustDial(t, d, "node2"); again != conn2 {
+			t.Error("node2 conn was replaced")
+		}
+		if conn2.GetState() == connectivity.Shutdown {
+			t.Error("node2 conn was closed")
+		}
+	})
+
+	t.Run("no IP closes the cached conn and returns an error", func(t *testing.T) {
+		idx := newTestAteletIndexer(t, ateletPod("atelet-1", "uid-1", "node1", "10.0.0.1"))
+		d := newDialer(idx, nil)
+		conn1 := mustDial(t, d, "node1")
+		noIP := ateletPod("atelet-1", "uid-1", "node1", "")
+		noIP.Status.PodIPs = nil
+		if err := idx.Update(noIP); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := d.DialForAteletOnNode("node1"); err == nil || errors.Is(err, ErrNoAteletOnNode) {
+			t.Fatalf("DialForAteletOnNode = %v, want a non-ErrNoAteletOnNode error", err)
+		}
+		wantShutdown(t, conn1)
+		if err := idx.Update(ateletPod("atelet-1", "uid-1", "node1", "10.0.0.1")); err != nil {
+			t.Fatal(err)
+		}
+		conn2 := mustDial(t, d, "node1")
+		if conn2 == conn1 || conn2.Target() != "10.0.0.1:8085" {
+			t.Errorf("want a new conn to 10.0.0.1:8085, got %q", conn2.Target())
+		}
+	})
+
+	t.Run("concurrent dials share one conn", func(t *testing.T) {
+		d := newDialer(newTestAteletIndexer(t, ateletPod("atelet-1", "uid-1", "node1", "10.0.0.1")), nil)
+		const n = 16
+		conns := make([]*grpc.ClientConn, n)
+		errs := make([]error, n)
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		for i := range n {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				conns[i], errs[i] = d.DialForAteletOnNode("node1")
+			}()
+		}
+		close(start)
+		wg.Wait()
+		if conns[0] != nil {
+			t.Cleanup(func() { _ = conns[0].Close() })
+		}
+		for i := range n {
+			if errs[i] != nil {
+				t.Fatalf("dial %d: %v", i, errs[i])
+			}
+			if conns[i] != conns[0] {
+				t.Errorf("dial %d returned a different conn", i)
+			}
 		}
 	})
 }

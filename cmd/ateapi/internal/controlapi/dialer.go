@@ -105,7 +105,7 @@ func NewAteletDialer(ateletIndexer cache.Indexer, ateletSPIFFEID, clientBundlePa
 // up in practice.
 func newAteletConnCache(size int) *lru.Cache {
 	return lru.NewWithEvictionFunc(size, func(_ lru.Key, value interface{}) {
-		value.(cachedAteletConn).conn.Close()
+		_ = value.(cachedAteletConn).conn.Close()
 	})
 }
 

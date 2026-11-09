@@ -45,6 +45,7 @@ import (
 	"github.com/agent-substrate/substrate/internal/ateomnet"
 	"github.com/agent-substrate/substrate/internal/ateomtunnel"
 	"github.com/agent-substrate/substrate/internal/nodepath"
+	"github.com/agent-substrate/substrate/internal/ocispec"
 	"github.com/agent-substrate/substrate/internal/otlprelay"
 	"github.com/agent-substrate/substrate/internal/proto/ateompb"
 	"github.com/agent-substrate/substrate/internal/resources"
@@ -73,6 +74,7 @@ var (
 
 	readinessListenAddress = pflag.String("readiness-listen-address", "0.0.0.0:8080", "Address for HTTP readiness checks")
 	maxActors              = pflag.Int("max-actors", 1000, "How many actors this worker will host at once")
+	guestDevices           = pflag.StringSlice("guest-devices", nil, "Device nodes to create in each guest container, from a fixed allowlist (fuse).")
 )
 
 func main() {
@@ -104,6 +106,9 @@ func do(ctx context.Context) error {
 	slog.InfoContext(ctx, "ateom-microvm booting", slog.String("version", version.Version))
 	if *maxActors < 0 {
 		return fmt.Errorf("--max-actors must not be negative, got %d", *maxActors)
+	}
+	if err := ocispec.ValidateGuestDevices(*guestDevices); err != nil {
+		return fmt.Errorf("--guest-devices: %w", err)
 	}
 
 	const serviceName = "ateom-microvm"
@@ -221,6 +226,7 @@ func do(ctx context.Context) error {
 		return err
 	}
 	ateomService := NewService(*podUID, *chBinary, *kataDebug, *vmmMemReserve, *maxActors, tunnel, actorLogger)
+	ateomService.guestDevices = *guestDevices
 	ateomService.actorCgroups = actorCgroups
 
 	svr := grpc.NewServer(
@@ -332,6 +338,9 @@ type AteomService struct {
 	podUID    string
 	chBinary  string
 	kataDebug bool
+	// guestDevices names the allowlisted device nodes to create in each guest
+	// container. Set from --guest-devices.
+	guestDevices []string
 
 	// memReserveMiB is guest RAM (MiB) held back from the pod's memory limit for
 	// the cloud-hypervisor VMM + virtiofsd (host processes sharing the pod cgroup

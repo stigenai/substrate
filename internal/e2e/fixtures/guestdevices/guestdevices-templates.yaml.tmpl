@@ -1,0 +1,66 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The guestdevices fixture's ActorTemplates: protojson-shaped
+# ateapipb.ActorTemplate documents. Both run the probe with SYS_ADMIN, which a
+# FUSE mount needs. They differ only in the pool they select, so the result
+# depends only on the pool's guestDevices.
+
+metadata:
+  atespace: ate-e2e${FIXTURE_SUFFIX}
+  name: fuse
+workerSelector:
+  matchLabels:
+    workload: guestdevices-fuse
+containers:
+- name: probe
+  image: ko://github.com/agent-substrate/substrate/internal/e2e/fixtures/probe
+  command: ["/ko-app/probe"]
+  securityContext:
+    capabilities:
+      add: ["SYS_ADMIN"]
+  wakeupProbe:
+    httpGet:
+      path: /healthz
+      port: 80
+    timeoutSeconds: 60
+${TEMPLATE_RESOURCES}
+${TEMPLATE_SANDBOX_CONFIG}
+snapshotConfig:
+  storageLocation: gs://${BUCKET_NAME}/ate-e2e-guestdevices-fuse${FIXTURE_SUFFIX}/
+
+---
+
+metadata:
+  atespace: ate-e2e${FIXTURE_SUFFIX}
+  name: nofuse
+workerSelector:
+  matchLabels:
+    workload: guestdevices-nofuse
+containers:
+- name: probe
+  image: ko://github.com/agent-substrate/substrate/internal/e2e/fixtures/probe
+  command: ["/ko-app/probe"]
+  securityContext:
+    capabilities:
+      add: ["SYS_ADMIN"]
+  wakeupProbe:
+    httpGet:
+      path: /healthz
+      port: 80
+    timeoutSeconds: 60
+${TEMPLATE_RESOURCES}
+${TEMPLATE_SANDBOX_CONFIG}
+snapshotConfig:
+  storageLocation: gs://${BUCKET_NAME}/ate-e2e-guestdevices-nofuse${FIXTURE_SUFFIX}/

@@ -14,6 +14,7 @@ The `WorkerPool` defines the pool of physical "warm" compute capacity. It manage
 | `workerImage` | `string` | **Required.** The container image for the `ateom` herder process (e.g. `ko://github.com/agent-substrate/substrate/cmd/ateom-gvisor`). |
 | `sandboxClass` | `string` | Optional. The sandbox runtime family for the pool: `gvisor` (default) or `microvm`. Drives the worker pod shape (e.g. KVM device mounts, node placement). The sandbox binaries themselves come from the [`SandboxConfig`](#3-sandboxconfig-the-sandbox-itself) each `ActorTemplate` selects. |
 | `template` | `WorkerPoolPodTemplate` | **Optional.** Metadata, scheduling, and resource settings for worker workloads. |
+| `guestDevices` | `[]string` | Optional. Device nodes to create in each actor container on the pool, from a fixed allowlist: `fuse` (`/dev/fuse`, char 10:229). Only a `microvm` pool accepts it. See [Guest devices](#guest-devices-guestdevices). |
 
 #### `WorkerPoolPodTemplate` (`spec.template`)
 
@@ -99,6 +100,24 @@ device, sharing one, or resuming onto compatible hardware.
 A `nvidia.com/gpu` pool limit is now an ordinary extended resource: it places the
 worker pod on a GPU node and reserves the device, and nothing else reads it.
 
+
+### Guest devices (`guestDevices`)
+
+An operator can give the actors on a `microvm` pool a device node from a fixed allowlist. The only value now is `fuse`. It lets an actor mount a FUSE filesystem in its guest.
+
+For each name, the micro-VM worker adds the node to the OCI spec it sends to the kata agent. It also adds a device cgroup rule that allows the node. The agent creates the node in the container's `/dev` in the guest. The guest kernel serves the device, so the actor gets no host device. The API server refuses `guestDevices` on a `gvisor` pool.
+
+The node alone does not let an actor mount. The container must also ask for `SYS_ADMIN` in [`securityContext.capabilities`](#container-capabilities-securitycontextcapabilities). To send only these actors to the pool, put a label on the `WorkerPool` and match it with the template's `workerSelector`:
+
+```yaml
+kind: WorkerPool
+metadata:
+  labels:
+    example.com/guest-device-fuse: "true"
+spec:
+  sandboxClass: microvm
+  guestDevices: [fuse]
+```
 
 ### Status (`WorkerPoolStatus`)
 

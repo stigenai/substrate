@@ -16,6 +16,7 @@ package controllers
 
 import (
 	"slices"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -137,6 +138,17 @@ func buildDeploymentApplyConfig(wp *atev1alpha1.WorkerPool, otel ateomOTelSettin
 	// image new enough to accept it, which it necessarily has.
 	if brokerIdentity := installdefaults.SPIFFEID(systemNamespace, ateletServiceAccount); brokerIdentity != installdefaults.AteletSPIFFEID(installdefaults.SystemNamespace) {
 		args = append(args, "--atunnel-broker-identity="+brokerIdentity)
+	}
+
+	// The CRD refuses guestDevices on a gvisor pool, and ateom-gvisor has no
+	// such flag. Pass it only when set, so an older ateom image that does not
+	// know the flag still starts.
+	if wp.Spec.SandboxClass == atev1alpha1.SandboxClassMicroVM && len(wp.Spec.GuestDevices) > 0 {
+		devices := make([]string, len(wp.Spec.GuestDevices))
+		for i, d := range wp.Spec.GuestDevices {
+			devices[i] = string(d)
+		}
+		args = append(args, "--guest-devices="+strings.Join(devices, ","))
 	}
 
 	args = append(args,

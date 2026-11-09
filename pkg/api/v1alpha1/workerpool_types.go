@@ -77,6 +77,15 @@ type WorkerPoolPodTemplate struct {
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
+// GuestDevice names a device node from a fixed allowlist.
+//
+// +kubebuilder:validation:Enum=fuse
+type GuestDevice string
+
+// GuestDeviceFUSE is /dev/fuse (char 10:229).
+const GuestDeviceFUSE GuestDevice = "fuse"
+
+// +kubebuilder:validation:XValidation:rule="!has(self.guestDevices) || size(self.guestDevices) == 0 || (has(self.sandboxClass) && self.sandboxClass == 'microvm')",message="guestDevices requires sandboxClass microvm"
 type WorkerPoolSpec struct {
 	// Replicas is the number of worker pods to run.
 	// +required
@@ -105,6 +114,17 @@ type WorkerPoolSpec struct {
 	// +kubebuilder:validation:Enum=gvisor;microvm
 	// +kubebuilder:default=gvisor
 	SandboxClass SandboxClass `json:"sandboxClass,omitempty"`
+
+	// GuestDevices names device nodes to create in each actor container on
+	// this pool, with a device cgroup rule that allows them. Only the microvm
+	// class accepts it: the node exists in the guest kernel, not on the host.
+	// An actor also needs the capabilities to use the device, for example
+	// SYS_ADMIN to mount a FUSE filesystem.
+	//
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=1
+	GuestDevices []GuestDevice `json:"guestDevices,omitempty"`
 }
 
 type WorkerPoolStatus struct {

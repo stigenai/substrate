@@ -1,0 +1,131 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Manual test: run the LayerFS spike image as a micro-VM actor in a
+# throwaway kind cluster, on a pool with guestDevices: [fuse] and on a pool
+# without it. The results go to the job summary.
+#
+# To start it, add the label layerfs-e2e to a pull request from this
+# repository. After this file is on the default branch, you can also use:
+#   gh workflow run layerfs-e2e.yaml --ref <branch>
+name: layerfs-e2e
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: LayerFS spike image
+        default: ghcr.io/stigenai/layerfs-spike:probe-67310175e
+  pull_request:
+    types: [labeled]
+permissions:
+  contents: read
+  # Pull the LayerFS spike image from ghcr.io with GITHUB_TOKEN.
+  packages: read
+jobs:
+  layerfs:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'layerfs-e2e'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      E2E_ATENET_DATAPLANE: envoy
+      ATE_ATENET_DATAPLANE: envoy
+      ATE_CREDENTIAL_PROVIDER: '{"name":"k8s.io"}'
+      ARTIFACTS: ${{ github.workspace }}/_artifacts
+      LAYERFS_SOURCE_IMAGE: ${{ inputs.image || 'ghcr.io/stigenai/layerfs-spike:probe-67310175e' }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+    - name: Setup Go
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+      with:
+        go-version-file: 'go.mod'
+        cache: false
+    - name: Restore Go build cache
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: |
+          ~/.cache/go-build
+          ~/go/pkg/mod
+        key: e2e-go-${{ runner.os }}-${{ github.sha }}
+        restore-keys: e2e-go-${{ runner.os }}-
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      with:
+        driver-opts: network=host
+        buildkitd-config-inline: |
+          [registry."localhost:5001"]
+            http = true
+    - name: Expose GitHub runtime to buildx
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      with:
+        script: |
+          for (const [key, value] of Object.entries(process.env)) {
+            if (key.startsWith('ACTIONS_')) core.exportVariable(key, value);
+          }
+    - name: Restore micro-VM assets
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: bin/microvm-assets/amd64
+        key: microvm-assets-amd64-${{ hashFiles('hack/microvm-assets/assemble.sh') }}
+    - name: Free disk space
+      # The LayerFS spike image is about 6.4 GB unpacked, and the kind node
+      # stores it a second time.
+      run: |
+        sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+        df -h /
+    - name: Enable KVM
+      run: |
+        echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+          | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+        sudo udevadm control --reload-rules
+        sudo udevadm trigger --name-match=kvm
+    - name: Create cluster
+      run: hack/create-kind-cluster.sh
+    - name: Install Agent Substrate
+      run: hack/install-ate-kind.sh --deploy-ate-system --atenet-dataplane=envoy
+    - name: Install the micro-VM runtime
+      # Stages the micro-VM assets and installs the microvm SandboxConfig.
+      run: hack/run-microvm-demo-kind.sh
+    - name: Copy the LayerFS image into the kind registry
+      # Registry to registry, so the runner disk holds no extra copy.
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        printf '%s' "${GH_TOKEN}" | skopeo login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+        skopeo copy --dest-tls-verify=false --digestfile /tmp/layerfs.digest \
+          "docker://${LAYERFS_SOURCE_IMAGE}" docker://localhost:5001/layerfs-spike:ci
+        skopeo logout ghcr.io
+        echo "LAYERFS_IMAGE=localhost:5001/layerfs-spike@$(cat /tmp/layerfs.digest)" >> "${GITHUB_ENV}"
+    - name: Run the LayerFS test
+      env:
+        E2E_SANDBOX_CLASS: microvm
+        E2E_JUNIT_FILE: ${{ github.workspace }}/_artifacts/e2e-layerfs.xml
+      run: hack/run-e2e-kind.sh ./internal/e2e/manual/layerfs/... -v -run TestLayerFS -args --no-color
+    - name: Dump diagnostics on failure
+      if: failure()
+      run: |
+        kubectl --context kind-kind get workerpool,pods -A -o wide || true
+        kubectl --context kind-kind get pods -A -l ate.dev/worker-pool \
+          -o 'custom-columns=:.metadata.namespace,:.metadata.name' --no-headers 2>/dev/null \
+          | while read -r ns name; do
+              echo "=== logs: ${ns}/${name} ==="
+              kubectl --context kind-kind logs -n "${ns}" "${name}" --all-containers --tail=200 || true
+            done
+        for p in $(kubectl --context kind-kind get pods -n ate-system -o name 2>/dev/null); do
+          echo "=== logs: ate-system/${p} ==="
+          kubectl --context kind-kind logs -n ate-system "${p}" --all-containers --tail=200 || true
+        done
+    - name: Tear down
+      if: always()
+      run: hack/delete-kind-cluster.sh || kind delete cluster

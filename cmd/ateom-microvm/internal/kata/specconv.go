@@ -111,6 +111,21 @@ func SpecToAgentPB(s *specs.Spec) *agentpb.Spec {
 			}
 			l.Namespaces = append(l.Namespaces, &agentpb.LinuxNamespace{Type: string(ns.Type)})
 		}
+		// The agent creates these nodes in the container's /dev. The
+		// Resources.Devices cgroup rules below must also allow them.
+		for _, d := range s.Linux.Devices {
+			ld := &agentpb.LinuxDevice{Path: d.Path, Type: d.Type, Major: d.Major, Minor: d.Minor}
+			if d.FileMode != nil {
+				ld.FileMode = uint32(*d.FileMode)
+			}
+			if d.UID != nil {
+				ld.UID = *d.UID
+			}
+			if d.GID != nil {
+				ld.GID = *d.GID
+			}
+			l.Devices = append(l.Devices, ld)
+		}
 		if r := s.Linux.Resources; r != nil {
 			res := &agentpb.LinuxResources{}
 			for _, d := range r.Devices {

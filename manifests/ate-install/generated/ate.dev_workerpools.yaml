@@ -68,6 +68,21 @@ spec:
           spec:
             description: spec defines the desired state of WorkerPool
             properties:
+              guestDevices:
+                description: |-
+                  GuestDevices names device nodes to create in each actor container on
+                  this pool, with a device cgroup rule that allows them. Only the microvm
+                  class accepts it: the node exists in the guest kernel, not on the host.
+                  An actor also needs the capabilities to use the device, for example
+                  SYS_ADMIN to mount a FUSE filesystem.
+                items:
+                  description: GuestDevice names a device node from a fixed allowlist.
+                  enum:
+                  - fuse
+                  type: string
+                maxItems: 1
+                type: array
+                x-kubernetes-list-type: set
               replicas:
                 description: Replicas is the number of worker pods to run.
                 format: int32
@@ -444,6 +459,10 @@ spec:
             - replicas
             - workerImage
             type: object
+            x-kubernetes-validations:
+            - message: guestDevices requires sandboxClass microvm
+              rule: '!has(self.guestDevices) || size(self.guestDevices) == 0 || (has(self.sandboxClass)
+                && self.sandboxClass == ''microvm'')'
           status:
             description: status is the observed state of WorkerPool
             properties:

@@ -453,7 +453,25 @@ func TestDialForAteletOnNode(t *testing.T) {
 		wantShutdown(t, conn1)
 	})
 
-	t.Run("closes the conn when the node has no atelet", func(t *testing.T) {
+	t.Run("redials with the new UID when the pod is replaced at the same IP", func(t *testing.T) {
+		idx := newTestAteletIndexer(t, ateletPod("atelet-1", "uid-1", "node1", "10.0.0.1"))
+		var uids []string
+		d := newDialer(idx, &uids)
+		conn1 := mustDial(t, d, "node1")
+		if err := idx.Update(ateletPod("atelet-1", "uid-2", "node1", "10.0.0.1")); err != nil {
+			t.Fatal(err)
+		}
+		conn2 := mustDial(t, d, "node1")
+		if conn2 == conn1 {
+			t.Fatal("got the cached conn after a UID change")
+		}
+		if len(uids) != 2 || uids[1] != "uid-2" {
+			t.Errorf("credential UIDs = %v, want second uid-2", uids)
+		}
+		wantShutdown(t, conn1)
+	})
+
+	t.Run("closes the conn when the node has no atelet",func(t *testing.T) {
 		pod := ateletPod("atelet-1", "uid-1", "node1", "10.0.0.1")
 		idx := newTestAteletIndexer(t, pod)
 		d := newDialer(idx, nil)

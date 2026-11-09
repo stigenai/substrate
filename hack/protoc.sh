@@ -62,7 +62,7 @@ if [ ! -f "$PROTOC_BIN" ]; then
   esac
 
   # Download and verify
-  curl -sSL "$URL" -o "$OUT_DIR/protoc.zip"
+  curl -fsSL "$URL" -o "$OUT_DIR/protoc.zip"
   ACTUAL_SHA=$(shasum -a 256 "$OUT_DIR/protoc.zip" | awk '{print $1}')
   if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
     echo "Checksum verification failed for protoc download!"

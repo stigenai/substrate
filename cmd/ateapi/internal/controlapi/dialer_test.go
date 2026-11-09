@@ -398,6 +398,7 @@ func TestDialForAteletOnNode(t *testing.T) {
 		if err != nil {
 			t.Fatalf("DialForAteletOnNode(%s): %v", node, err)
 		}
+		t.Cleanup(func() { _ = conn.Close() })
 		return conn
 	}
 	wantShutdown := func(t *testing.T, conn *grpc.ClientConn) {
@@ -544,6 +545,9 @@ func TestDialForAteletOnNode(t *testing.T) {
 		}
 		close(start)
 		wg.Wait()
+		if conns[0] != nil {
+			t.Cleanup(func() { _ = conns[0].Close() })
+		}
 		for i := range n {
 			if errs[i] != nil {
 				t.Fatalf("dial %d: %v", i, errs[i])

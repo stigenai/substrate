@@ -32,5 +32,7 @@ in
       unstablePkgs.gitleaks
       pkgs.gnumake
       pkgs.git
+      pkgs.unzip
+      pkgs.perl
     ];
 }

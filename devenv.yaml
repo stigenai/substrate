@@ -19,5 +19,7 @@ inputs:
     url: git+https://github.com/NixOS/nixpkgs?rev=205fd4226592cc83fd4c0885a3e4c9c400efabb5&shallow=1
   nixpkgs-unstable:
     url: git+https://github.com/NixOS/nixpkgs?rev=f9a75f41be3a74eab55d3a7679d34ad6cc0da977&shallow=1
+  nixpkgs-rust:
+    url: git+https://github.com/NixOS/nixpkgs?rev=f4a03c008967841f2a0b3cb7c436fc6fc31671f6&shallow=1
   devenv:
     url: git+https://github.com/cachix/devenv?dir=src/modules&ref=refs/tags/v2.4.0&shallow=1

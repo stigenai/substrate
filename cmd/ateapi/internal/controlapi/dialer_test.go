@@ -471,7 +471,7 @@ func TestDialForAteletOnNode(t *testing.T) {
 		wantShutdown(t, conn1)
 	})
 
-	t.Run("closes the conn when the node has no atelet",func(t *testing.T) {
+	t.Run("closes the conn when the node has no atelet", func(t *testing.T) {
 		pod := ateletPod("atelet-1", "uid-1", "node1", "10.0.0.1")
 		idx := newTestAteletIndexer(t, pod)
 		d := newDialer(idx, nil)

@@ -1,0 +1,64 @@
+{
+  "schema_version": "1.0",
+  "extensions": {
+    "beads": {
+      "version": "0.3.0",
+      "source": "local",
+      "manifest_hash": "sha256:4aa71a28e0aecbf7e0d6a6cc28694e490378df6a5572004a294533d38b4cf30c",
+      "enabled": true,
+      "priority": 10,
+      "registered_commands": {
+        "agy": [
+          "speckit.beads.tasks",
+          "speckit.beads.sync",
+          "speckit.beads.ready",
+          "speckit.beads.implement",
+          "speckit.beads.render",
+          "speckit.beads.status"
+        ],
+        "codex": [
+          "speckit.beads.tasks",
+          "speckit.beads.sync",
+          "speckit.beads.ready",
+          "speckit.beads.implement",
+          "speckit.beads.render",
+          "speckit.beads.status"
+        ],
+        "docker-agent": [
+          "speckit.beads.tasks",
+          "speckit.beads.sync",
+          "speckit.beads.ready",
+          "speckit.beads.implement",
+          "speckit.beads.render",
+          "speckit.beads.status"
+        ],
+        "muse": [
+          "speckit.beads.tasks",
+          "speckit.beads.sync",
+          "speckit.beads.ready",
+          "speckit.beads.implement",
+          "speckit.beads.render",
+          "speckit.beads.status"
+        ],
+        "zed": [
+          "speckit.beads.tasks",
+          "speckit.beads.sync",
+          "speckit.beads.ready",
+          "speckit.beads.implement",
+          "speckit.beads.render",
+          "speckit.beads.status"
+        ],
+        "claude": [
+          "speckit.beads.tasks",
+          "speckit.beads.sync",
+          "speckit.beads.ready",
+          "speckit.beads.implement",
+          "speckit.beads.render",
+          "speckit.beads.status"
+        ]
+      },
+      "registered_skills": [],
+      "installed_at": "2026-11-17T15:49:48.461250+00:00"
+    }
+  }
+}

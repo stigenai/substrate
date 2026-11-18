@@ -120,6 +120,10 @@ def main():
         if "vendor" in filepath:
             continue
 
+        # exclude Spec Kit files, which `specify init` generates
+        if filepath.startswith(".specify/"):
+            continue
+
         # exclude top-level _LICENSES directory
         if filepath.startswith("_LICENSES/"):
             continue

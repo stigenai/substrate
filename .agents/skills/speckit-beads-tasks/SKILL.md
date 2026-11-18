@@ -1,0 +1,1 @@
+../../../.specify/extensions/beads/.specify-dev/agent-commands/zed/speckit-beads-tasks/SKILL.md

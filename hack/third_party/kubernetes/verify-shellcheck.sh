@@ -63,6 +63,7 @@ if [[ "$#" == 0 ]]; then
       -path './_*'     -o \
       -path './.git/*'  -o \
       -path '*/vendor/*' -o \
+      -path './.specify/*' -o \
       -path '*/third_party/*' \
     \))
 fi

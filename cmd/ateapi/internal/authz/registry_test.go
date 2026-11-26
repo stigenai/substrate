@@ -143,6 +143,12 @@ func TestDefaultRPCPermissions(t *testing.T) {
 			want:       []check{{RelationCanGet, "actor:team-a/runner"}},
 		},
 		{
+			name:       "ReadSupervisorTermination",
+			fullMethod: ateapi.Control_ReadSupervisorTermination_FullMethodName,
+			req:        &ateapi.ReadSupervisorTerminationRequest{Actor: actorRef, ActorUid: "uid", ActivationId: "activation"},
+			want:       []check{{RelationCanGet, "actor:team-a/runner"}},
+		},
+		{
 			name:       "ListActors in an atespace",
 			fullMethod: ateapi.Control_ListActors_FullMethodName,
 			req:        &ateapi.ListActorsRequest{Atespace: "team-a"},
@@ -457,6 +463,12 @@ func TestDefaultRPCPermissions_MalformedIdentifierFailsClosed(t *testing.T) {
 			name:       "GetActor without a name",
 			fullMethod: ateapi.Control_GetActor_FullMethodName,
 			req:        &ateapi.GetActorRequest{Actor: &ateapi.ObjectRef{Atespace: "team-a"}},
+			wantField:  "actor.name",
+		},
+		{
+			name:       "ReadSupervisorTermination without a name",
+			fullMethod: ateapi.Control_ReadSupervisorTermination_FullMethodName,
+			req:        &ateapi.ReadSupervisorTerminationRequest{Actor: &ateapi.ObjectRef{Atespace: "team-a"}},
 			wantField:  "actor.name",
 		},
 		{

@@ -67,6 +67,7 @@ import (
 	"go.ate.dev/substrate/internal/resources"
 	"go.ate.dev/substrate/internal/serverboot"
 	"go.ate.dev/substrate/internal/substratex509"
+	"go.ate.dev/substrate/internal/supervisortermination"
 	"go.ate.dev/substrate/internal/version"
 	"go.ate.dev/substrate/internal/volume"
 	"go.ate.dev/substrate/internal/volume/csi"
@@ -85,6 +86,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
@@ -2065,7 +2067,8 @@ func (s *Atelet) Terminate(ctx context.Context, req *ateletpb.TerminateRequest) 
 	endTerminate := s.snapshots.BeginTerminate(actorUID)
 	defer endTerminate()
 
-	if err := s.terminateWorkloadOnWorker(ctx, req, actorRef, actorUID); err != nil {
+	stop, err := s.terminateWorkloadOnWorker(ctx, req, actorRef, actorUID)
+	if err != nil {
 		return nil, err
 	}
 
@@ -2097,7 +2100,7 @@ func (s *Atelet) Terminate(ctx context.Context, req *ateletpb.TerminateRequest) 
 	}
 	s.restoreFailures.reset(actorUID)
 
-	return &ateletpb.TerminateResponse{}, nil
+	return &ateletpb.TerminateResponse{SupervisorStop: stop}, nil
 }
 
 // terminateWorkloadOnWorker tears the workload down on the worker hosting it.
@@ -2112,14 +2115,14 @@ func (s *Atelet) Terminate(ctx context.Context, req *ateletpb.TerminateRequest) 
 // A worker that is present but rejects the call still fails: that is a live
 // sandbox this could not tear down, and reclaiming its directories underneath
 // it would be worse than leaving them.
-func (s *Atelet) terminateWorkloadOnWorker(ctx context.Context, req *ateletpb.TerminateRequest, actorRef resources.ActorRef, actorUID string) error {
+func (s *Atelet) terminateWorkloadOnWorker(ctx context.Context, req *ateletpb.TerminateRequest, actorRef resources.ActorRef, actorUID string) (*ateapi.SupervisorTerminationAck, error) {
 	workerPodUID := req.GetWorkerPodUid()
 	if workerPodUID == "" {
 		// No worker named: the actor has no worker pod left, only state on
 		// this node, such as a suspended or crashed actor's on delete or revert.
 		slog.InfoContext(ctx, "no worker named during terminate; reclaiming the actor's node state without a sandbox teardown",
 			slog.Any("actor", actorRef), slog.String("actorUID", actorUID))
-		return nil
+		return nil, nil
 	}
 	// The socket is the worker's liveness. The worker removes its socket on a
 	// graceful exit, and workerSandboxSyncer removes the pod's directory once
@@ -2132,11 +2135,11 @@ func (s *Atelet) terminateWorkloadOnWorker(ctx context.Context, req *ateletpb.Te
 	// tolerated below.
 	if _, err := os.Stat(workerSocketPath(workerPodUID)); err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("failed to stat the worker socket during terminate (actor: %s, actorUID: %s): %w", actorRef, actorUID, err)
+			return nil, fmt.Errorf("failed to stat the worker socket during terminate (actor: %s, actorUID: %s): %w", actorRef, actorUID, err)
 		}
 		slog.InfoContext(ctx, "worker is gone during terminate; reclaiming the actor's node state without a sandbox teardown",
 			slog.Any("actor", actorRef), slog.String("actorUID", actorUID), slog.String("workerPodUID", workerPodUID))
-		return nil
+		return nil, nil
 	}
 
 	sandboxRec, err := readSandboxRecord(actorUID)
@@ -2147,25 +2150,25 @@ func (s *Atelet) terminateWorkloadOnWorker(ctx context.Context, req *ateletpb.Te
 			// Without it, no sandbox was started.
 			slog.InfoContext(ctx, "no sandbox record during terminate; reclaiming the actor's node state without a sandbox teardown",
 				slog.Any("actor", actorRef), slog.String("actorUID", actorUID))
-			return nil
+			return nil, nil
 		}
-		return fmt.Errorf("failed to read sandbox record during terminate (actor: %s, actorUID: %s): %w", actorRef, actorUID, err)
+		return nil, fmt.Errorf("failed to read sandbox record during terminate (actor: %s, actorUID: %s): %w", actorRef, actorUID, err)
 	}
 	assetPaths, err := s.ensureSandboxAssets(ctx, sandboxRec, ateletpath.SandboxAssetsDir(actorUID))
 	if err != nil {
-		return fmt.Errorf("failed to ensure sandbox assets during terminate (actor: %s, actorUID: %s): %w", actorRef, actorUID, err)
+		return nil, fmt.Errorf("failed to ensure sandbox assets during terminate (actor: %s, actorUID: %s): %w", actorRef, actorUID, err)
 	}
 
 	client, err := s.dialWorker(ctx, workerPodUID)
 	if err != nil {
-		return fmt.Errorf("failed to dial worker for terminate (actor: %s, actorUID: %s): %w", actorRef, actorUID, err)
+		return nil, fmt.Errorf("failed to dial worker for terminate (actor: %s, actorUID: %s): %w", actorRef, actorUID, err)
 	}
 
 	spec, err := buildWorkerWorkloadSpec(req.GetSpec(), nil)
 	if err != nil {
-		return apierror.InvalidArgument("invalid workload spec: %v", err)
+		return nil, apierror.InvalidArgument("invalid workload spec: %v", err)
 	}
-	if _, err := client.TerminateWorkload(ctx, &ateworkerpb.TerminateWorkloadRequest{
+	response, err := client.TerminateWorkload(ctx, &ateworkerpb.TerminateWorkloadRequest{
 		Atespace:              req.GetAtespace(),
 		ActorName:             req.GetActorName(),
 		ActorUid:              req.GetActorUid(),
@@ -2174,7 +2177,8 @@ func (s *Atelet) terminateWorkloadOnWorker(ctx context.Context, req *ateletpb.Te
 		RunscPath:             runscPathFor(assetPaths),
 		Spec:                  spec,
 		ActorDirs:             ateletpath.ActorDirs(actorUID),
-	}); err != nil {
+	})
+	if err != nil {
 		switch status.Code(err) {
 		case codes.NotFound:
 			slog.InfoContext(ctx, "workload not found on worker during terminate", slog.Any("actor", actorRef), slog.String("actorUID", actorUID))
@@ -2186,10 +2190,17 @@ func (s *Atelet) terminateWorkloadOnWorker(ctx context.Context, req *ateletpb.Te
 			slog.InfoContext(ctx, "worker unreachable during terminate; reclaiming the actor's node state without a sandbox teardown",
 				slog.Any("actor", actorRef), slog.String("actorUID", actorUID), slog.Any("err", err))
 		default:
-			return fmt.Errorf("failed calling worker TerminateWorkload (actor: %s, actorUID: %s): %w", actorRef, actorUID, err)
+			return nil, fmt.Errorf("failed calling worker TerminateWorkload (actor: %s, actorUID: %s): %w", actorRef, actorUID, err)
 		}
 	}
-	return nil
+	stop := response.GetSupervisorStop()
+	if stop == nil {
+		return nil, nil
+	}
+	if err := supervisortermination.ValidateAck(actorUID, req.GetSpec().GetSupervisorActivation(), stop); err != nil {
+		return nil, apierror.FailedPrecondition("runtime termination identity differs")
+	}
+	return proto.CloneOf(stop), nil
 }
 
 // checkLocalSnapshotFiles verifies each snapshot file exists in dir as a
@@ -2326,7 +2337,7 @@ func buildWorkerWorkloadSpec(spec *ateletpb.WorkloadSpec, containerSpecs []*atew
 		volumes[name] = vol
 	}
 
-	out := &ateworkerpb.WorkloadSpec{}
+	out := &ateworkerpb.WorkloadSpec{SupervisorActivation: proto.CloneOf(spec.GetSupervisorActivation())}
 	for i, ctr := range spec.GetContainers() {
 		var ddMounts []*ateworkerpb.VolumeMount
 		var extMounts []*ateworkerpb.VolumeMount

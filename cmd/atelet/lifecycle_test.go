@@ -30,6 +30,7 @@ import (
 	"testing"
 	"time"
 
+	"go.ate.dev/substrate/api/ateapi/v1"
 	atev1 "go.ate.dev/substrate/api/infra/k8s/ate/v1"
 	"go.ate.dev/substrate/cmd/atelet/internal/actordirs"
 	"go.ate.dev/substrate/cmd/atelet/internal/ateletpath"
@@ -118,6 +119,10 @@ type fakeWorker struct {
 	stoppedByResp *ateworkerpb.CheckpointWorkloadResponse
 	// terminations counts TerminateWorkload calls.
 	terminations atomic.Int32
+	// supervisorStop is the acknowledgement TerminateWorkload returns, and
+	// terminatedSpec the spec the last TerminateWorkload arrived with.
+	supervisorStop *ateapi.SupervisorTerminationAck
+	terminatedSpec *ateworkerpb.WorkloadSpec
 }
 
 // setStoppedBy records the response of the checkpoint that stopped the
@@ -221,12 +226,15 @@ func (f *fakeWorker) RestoreWorkload(_ context.Context, req *ateworkerpb.Restore
 func (f *fakeWorker) TerminateWorkload(_ context.Context, req *ateworkerpb.TerminateWorkloadRequest) (*ateworkerpb.TerminateWorkloadResponse, error) {
 	f.terminations.Add(1)
 	f.recordActorDirs("TerminateWorkload", req.GetActorDirs())
+	f.mu.Lock()
+	f.terminatedSpec = proto.CloneOf(req.GetSpec())
+	f.mu.Unlock()
 	if f.onTerminate != nil {
 		if err := f.onTerminate(); err != nil {
 			return nil, err
 		}
 	}
-	return &ateworkerpb.TerminateWorkloadResponse{}, nil
+	return &ateworkerpb.TerminateWorkloadResponse{SupervisorStop: proto.CloneOf(f.supervisorStop)}, nil
 }
 
 // serveFakeWorker serves worker on a unix socket and points atelet's dialer at

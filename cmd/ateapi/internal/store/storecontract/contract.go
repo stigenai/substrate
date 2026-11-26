@@ -38,6 +38,7 @@ import (
 	"go.ate.dev/substrate/api/ateapi/v1"
 	"go.ate.dev/substrate/cmd/ateapi/internal/store"
 	"go.ate.dev/substrate/internal/resources"
+	"go.ate.dev/substrate/internal/supervisortermination/supervisorterminationtest"
 )
 
 // testAtespace is the atespace used by tests that create a single actor.
@@ -954,6 +955,51 @@ func runActorContractTests(t *testing.T, setup func(t *testing.T) store.Interfac
 					t.Errorf("expected ErrNotFound after delete, got %v", err)
 				}
 			})
+		}
+	})
+
+	t.Run("SupervisorTermination", func(t *testing.T) {
+		s := setup(t)
+		ctx := context.Background()
+		proof := supervisorterminationtest.Receipt()
+		mustCreateAtespace(t, s, proof.Atespace)
+		mustCreateAtespace(t, s, "team-b")
+		actor, err := s.CreateActor(ctx, &ateapi.Actor{
+			Metadata: &ateapi.ResourceMetadata{Atespace: proof.Atespace, Name: proof.ActorName},
+			Status:   &ateapi.ActorStatus{State: ateapi.ActorState_ACTOR_STATE_DELETING, SupervisorActivation: proof.Activation},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ref := resources.ActorRefFromActor(actor)
+		proof.Stop.ActorUid = actor.GetMetadata().GetUid()
+		actor, err = s.UpdateActor(ctx, ref, store.PreconditionFrom(actor), func(a *ateapi.Actor) error {
+			a.Status.SupervisorStop = proof.Stop
+			a.Status.SupervisorStopNode = proof.NodeName
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		uid, activation := actor.GetMetadata().GetUid(), proof.Activation.GetActivationId()
+		if _, err := s.GetSupervisorTermination(ctx, ref, uid, activation); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("proof before deletion = %v, want ErrNotFound", err)
+		}
+		if _, err := s.DeleteActor(ctx, ref, store.DeletePreconditions{UID: uid, Version: actor.GetMetadata().GetVersion()}); err != nil {
+			t.Fatal(err)
+		}
+		retained, err := s.GetSupervisorTermination(ctx, ref, uid, activation)
+		if err != nil || !proto.Equal(retained.GetStop(), proof.Stop) {
+			t.Fatalf("retained stop differs: %v", err)
+		}
+		if _, err := s.GetSupervisorTermination(ctx, resources.ActorRef{Atespace: "team-b", Name: ref.Name}, uid, activation); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("cross-atespace proof = %v, want ErrNotFound", err)
+		}
+		if _, err := s.CreateActor(ctx, &ateapi.Actor{Metadata: &ateapi.ResourceMetadata{Atespace: ref.Atespace, Name: ref.Name}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.GetSupervisorTermination(ctx, ref, uid, activation); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("proof with replacement occupant = %v, want ErrNotFound", err)
 		}
 	})
 

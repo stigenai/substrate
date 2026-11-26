@@ -513,6 +513,8 @@ func (w *ActorWorkflow) assignWorkerAttempt(ctx context.Context, actorRef resour
 		toUpdate.Status.AssignedNode = newAssignment.GetNodeName()
 		// Every assignment starts a new activation, even on the same worker.
 		toUpdate.Status.SupervisorActivation = nil
+		toUpdate.Status.SupervisorStop = nil
+		toUpdate.Status.SupervisorStopNode = ""
 		if activation != nil {
 			toUpdate.Status.SupervisorActivation = proto.CloneOf(activation)
 			toUpdate.Status.SupervisorActivation.ActivationId = uuid.NewString()

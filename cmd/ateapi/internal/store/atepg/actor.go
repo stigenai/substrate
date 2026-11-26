@@ -183,6 +183,9 @@ func (p *Persistence) DeleteActor(ctx context.Context, actorRef resources.ActorR
 	if _, err := tx.Exec(ctx, `DELETE FROM actors WHERE atespace = $1 AND name = $2`, atespace, name); err != nil {
 		return nil, fmt.Errorf("deleting actor %s/%s: %w", atespace, name, err)
 	}
+	if err := retainSupervisorTermination(ctx, tx, deleted); err != nil {
+		return nil, fmt.Errorf("retaining supervisor termination of %s/%s: %w", atespace, name, err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("committing actor delete %s/%s: %w", atespace, name, err)
 	}

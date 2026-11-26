@@ -92,6 +92,11 @@ func ValidateMintWorkerActorJwtRequest(ctx context.Context, req *ateapi.MintWork
 	return Validate_MintWorkerActorJwtRequest(ctx, op, nil, req, nil)
 }
 
+func ValidateReadSupervisorTerminationRequest(ctx context.Context, req *ateapi.ReadSupervisorTerminationRequest) field.ErrorList {
+	op := MakeCreateOp(ctx)
+	return Validate_ReadSupervisorTerminationRequest(ctx, op, nil, req, nil)
+}
+
 func ValidateMintSupervisorBootstrapRequest(ctx context.Context, req *ateapi.MintSupervisorBootstrapRequest) field.ErrorList {
 	op := operation.Operation{Type: operation.Create}
 	return Validate_MintSupervisorBootstrapRequest(ctx, op, nil, req, nil)

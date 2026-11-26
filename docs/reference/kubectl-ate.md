@@ -125,6 +125,19 @@ and status. No environment values, bootstrap token, or secrets are printed.
 The observation is not an execution permit; callers must require the expected
 running activation and their own current authority.
 
+#### Protected supervisor termination proof
+
+```bash
+kubectl ate get supervisor-termination <actor-name> --atespace <atespace> \
+  --actor-uid <uid> --activation-id <id> -o json
+```
+
+This read-only command prints the receipt committed with the deletion of one
+exact actor incarnation and activation. It requires JSON output and has a
+ten-second deadline. The command prints nothing unless the receipt names the
+requested atespace, actor, UID and activation. See
+`docs/fabriek-supervisor-bootstrap.md` for what the receipt proves.
+
 #### `kubectl ate get actor` output columns
 
 | Column | Meaning |

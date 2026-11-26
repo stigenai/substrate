@@ -2712,10 +2712,18 @@ type ReadSupervisorTerminationRequest struct {
 	// The actor to look up. Atespace and name are required.
 	//
 	// +k8s:required
+	// +k8s:subfield(atespace)=+k8s:required
+	// +k8s:subfield(name)=+k8s:required
 	Actor *ObjectRef `protobuf:"bytes,1,opt,name=actor,proto3" json:"actor,omitempty"`
-	// UID of the actor incarnation. Required.
+	// UID of the actor incarnation.
+	//
+	// +k8s:required
+	// +k8s:format=k8s-uuid
 	ActorUid string `protobuf:"bytes,2,opt,name=actor_uid,json=actorUid,proto3" json:"actor_uid,omitempty"`
-	// Identity of the activation, as a UUID. Required.
+	// Identity of the activation.
+	//
+	// +k8s:required
+	// +k8s:format=k8s-uuid
 	ActivationId  string `protobuf:"bytes,3,opt,name=activation_id,json=activationId,proto3" json:"activation_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

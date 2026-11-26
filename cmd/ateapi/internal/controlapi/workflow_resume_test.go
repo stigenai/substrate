@@ -1128,6 +1128,11 @@ type capturingAtelet struct {
 	onDetach     func()
 	terminateErr error
 	onTerminate  func()
+	// terminate is the last Terminate request, terminateCalls how many
+	// arrived, and stop the acknowledgement Terminate returns.
+	terminate      *ateletpb.TerminateRequest
+	terminateCalls int
+	stop           *ateapi.SupervisorTerminationAck
 }
 
 func (f *capturingAtelet) Restore(ctx context.Context, req *ateletpb.RestoreRequest) (*ateletpb.RestoreResponse, error) {
@@ -1193,17 +1198,20 @@ func (f *capturingAtelet) DetachActor(ctx context.Context, req *ateletpb.DetachA
 func (f *capturingAtelet) Terminate(ctx context.Context, req *ateletpb.TerminateRequest) (*ateletpb.TerminateResponse, error) {
 	f.mu.Lock()
 	hook := f.onTerminate
+	f.terminateCalls++
+	f.terminate = proto.CloneOf(req)
 	f.mu.Unlock()
 	if hook != nil {
 		hook()
 	}
 	f.mu.Lock()
 	err := f.terminateErr
+	stop := proto.CloneOf(f.stop)
 	f.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
-	return &ateletpb.TerminateResponse{}, nil
+	return &ateletpb.TerminateResponse{SupervisorStop: stop}, nil
 }
 
 func (f *capturingAtelet) detachRequest() *ateletpb.DetachActorRequest {

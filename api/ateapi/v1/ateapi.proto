@@ -1103,10 +1103,18 @@ message ReadSupervisorTerminationRequest {
   // The actor to look up. Atespace and name are required.
   //
   // +k8s:required
+  // +k8s:subfield(atespace)=+k8s:required
+  // +k8s:subfield(name)=+k8s:required
   ObjectRef actor = 1;
-  // UID of the actor incarnation. Required.
+  // UID of the actor incarnation.
+  //
+  // +k8s:required
+  // +k8s:format=k8s-uuid
   string actor_uid = 2;
-  // Identity of the activation, as a UUID. Required.
+  // Identity of the activation.
+  //
+  // +k8s:required
+  // +k8s:format=k8s-uuid
   string activation_id = 3;
 }
 

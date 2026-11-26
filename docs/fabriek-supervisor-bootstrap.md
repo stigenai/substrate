@@ -113,3 +113,59 @@ a memory snapshot. Existing ordinary actor and SystemInfo tests remain required.
 Actual gVisor UID isolation, snapshot/restore and deployed identity qualification
 are **NOT_RUN** at this source checkpoint. No production authority or account
 qualification follows from the local test results.
+
+## Exact termination proof
+
+Protected activations carry their complete server-owned identity through Run and
+Restore to the worker. The worker retains a cloned binding before launch. A
+protected Terminate request must match that binding, actor UID, actor directories
+and runtime arguments. Its `substrate.supervisor-stop/v1` acknowledgement is
+returned only after the actor's actual cgroup has been frozen, its live processes
+pinned by pidfd, killed, observed unpopulated and reaped, and runtime cleanup has
+succeeded. Supported runtime values are exactly `gvisor` and `microvm`.
+
+Atelet validates and propagates this acknowledgement only after its own cleanup
+succeeds. The control plane retains it with the original worker UID and node
+before releasing the assignment. The final exact UID actor deletion and
+`substrate.supervisor-termination/v1` receipt insertion share one PostgreSQL
+transaction. Migration 000002 makes receipts immutable and independent of the
+actor row. A controller restart can reuse the retained acknowledgement; a lost
+runtime or atelet acknowledgement before retention cannot be reconstructed from
+absence. A worker that is gone or unreachable returns no acknowledgement, so the
+deletion completes without a receipt.
+
+Deleting an actor that holds an activation requires an exact UID precondition
+before any state mutation. An old name-only deletion cannot delete a protected
+replacement actor; ordinary actor deletion still accepts its existing options.
+
+Read proof over the existing authenticated private Control connection:
+
+```sh
+kubectl-ate get supervisor-termination ACTOR --atespace SPACE \
+  --actor-uid RETAINED_UID --activation-id RETAINED_ACTIVATION -o json
+```
+
+The command has a ten-second deadline and a 16 KiB public JSON output bound. It
+uses `ReadSupervisorTermination`, which the registry authorizes as a read of the
+actor. The JSON uses protobuf snake_case names and RFC3339 timestamps. It
+contains the exact actor namespace, name and UID, the complete activation, node
+name, host-stop acknowledgement, deletion UUID and deletion timestamp. The
+command rejects a receipt whose deletion time precedes its host-stop timestamp.
+Consumers compare all retained identity fields, including worker, template,
+image and launch.
+
+Lookup returns no proof while **any current actor** occupies that namespace and
+name, even when an older immutable receipt exists. This is a single database
+snapshot observation, not a fence against a future creation. The caller must
+also retain its exact AX Task deletion identity and prevent queued
+reconciliation from recreating that task. No TaskNotFound, ActorNotFound,
+missing worker, skipped termination, empty cgroup, expired activation or
+successful generic deletion is substituted for a host-stop acknowledgement.
+Ordinary actors retain their previous cleanup behavior and produce no protected
+receipt.
+
+Local verification uses real PostgreSQL transactions, authorization checks,
+atelet RPC lifecycle fixtures and Linux kernel and process tests. The worker
+tests use synthetic retained activation bindings. They do not establish hosted
+gVisor or micro-VM guest qualification, which stays **NOT_RUN** until the
+separately approved candidate pool runs it.

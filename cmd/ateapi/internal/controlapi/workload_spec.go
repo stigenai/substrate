@@ -20,6 +20,7 @@ import (
 	"go.ate.dev/substrate/api/ateapi/v1"
 	"go.ate.dev/substrate/internal/proto/ateletpb"
 	"go.ate.dev/substrate/internal/supervisorbootstrap"
+	"google.golang.org/protobuf/proto"
 )
 
 // toAteletResources copies declared limits into atelet's form. Returns nil
@@ -36,7 +37,7 @@ func toAteletResources(r *ateapi.ResourceRequirements) *ateletpb.ResourceRequire
 // workloadSpecFromActorTemplate builds a WorkloadSpec from the template;
 // container env is copied verbatim.
 func workloadSpecFromActorTemplate(actorTemplate *ateapi.ActorTemplate, actor *ateapi.Actor, volumePublishContexts map[string]map[string]string) (*ateletpb.WorkloadSpec, error) {
-	workloadSpec := &ateletpb.WorkloadSpec{}
+	workloadSpec := &ateletpb.WorkloadSpec{SupervisorActivation: proto.CloneOf(actor.GetStatus().GetSupervisorActivation())}
 
 	// Convert volumes to atelet's representation.  ActorTemplate validation has
 	// already ensured that only one source is set.

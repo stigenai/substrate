@@ -118,6 +118,9 @@ type Interface interface {
 	// actor's status.worker_assignment is set.
 	DeleteActor(ctx context.Context, actorRef resources.ActorRef, precondition DeletePreconditions) (*ateapi.Actor, error)
 
+	// Fetches immutable proof for one deleted protected actor activation.
+	GetSupervisorTermination(ctx context.Context, actorRef resources.ActorRef, actorUID, activationID string) (*ateapi.SupervisorTerminationReceipt, error)
+
 	// Creates the 1:1 policy subresource for an existing Actor.
 	CreateEgressPolicy(ctx context.Context, actorRef resources.ActorRef, policy *ateapi.EgressPolicy) (*ateapi.EgressPolicy, error)
 	// Fetches an Actor's policy subresource.

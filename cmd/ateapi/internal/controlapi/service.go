@@ -110,6 +110,7 @@ func NewRPCService(
 // serviceStore enumerates the exact storage methods needed by
 // the control API and nothing more.
 type serviceStore interface {
+	GetSupervisorTermination(ctx context.Context, actorRef resources.ActorRef, actorUID, activationID string) (*ateapi.SupervisorTerminationReceipt, error)
 	CreateActor(ctx context.Context, actor *ateapi.Actor) (*ateapi.Actor, error)
 	GetActor(ctx context.Context, actorRef resources.ActorRef) (*ateapi.Actor, error)
 	UpdateActor(ctx context.Context, actorRef resources.ActorRef, precondition store.Precondition, mutate func(toUpdate *ateapi.Actor) error) (*ateapi.Actor, error)

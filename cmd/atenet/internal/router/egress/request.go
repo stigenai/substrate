@@ -41,9 +41,10 @@ const (
 //
 // The request is decided on the Host it named and the port the actor dialed,
 // by the http rules on the cleartext leg and the https rules on the MITM leg,
-// where the connection's SNI must fall under an https rule too. An allowed
-// request is dialed by the name it was decided on, on the port the actor
-// dialed.
+// where the connection's SNI must fall under an https rule too. On the MITM
+// leg the request path also picks among https rules that name path prefixes.
+// An allowed request is dialed by the name it was decided on, on the port the
+// actor dialed.
 func (h *Handler) handleRequest(ctx context.Context, md *extproc.RequestMetadata, leg string) (extproc.Result, error) {
 	if isWebSocketUpgrade(md) {
 		slog.WarnContext(ctx, "egress denied: WebSocket upgrades are not supported", slog.String("leg", leg), slog.String("host", md.Host))
@@ -188,7 +189,7 @@ func requestDestination(md *extproc.RequestMetadata) (egresspolicy.Destination, 
 			return egresspolicy.Destination{}, fmt.Errorf("request :authority %q and Host %q name different destinations", authority, host)
 		}
 	}
-	dest := egresspolicy.Destination{Hostname: named.Hostname, IP: named.IP}
+	dest := egresspolicy.Destination{Hostname: named.Hostname, IP: named.IP, Path: md.Path, HasPath: true}
 	if raw := md.Attribute(extproc.ConnectAuthorityFilterStateAttribute); raw != "" {
 		dialed, err := egresspolicy.NormalizeAuthority(raw)
 		if err != nil || !dialed.IP.IsValid() || dialed.Port == 0 {

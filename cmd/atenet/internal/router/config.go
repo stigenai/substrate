@@ -21,6 +21,7 @@ import (
 
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 
+	"go.ate.dev/substrate/cmd/atenet/internal/router/egress"
 	"go.ate.dev/substrate/cmd/atenet/internal/router/ingress"
 )
 
@@ -178,6 +179,9 @@ type routerConfig struct {
 	// EgressPolicy, and so how long a policy change takes to bite. 0 disables
 	// the cache.
 	EgressPolicyCacheTTL time.Duration
+	// NativeTLSDestination enables only native TLS to one operator-pinned
+	// hostname:port. The private Envoy TCP cluster must pin the same address.
+	NativeTLSDestination string
 
 	// CredentialProvider configures egress credential injection on the MITM leg.
 	// Only the egress gateway sets it, and only when injection is enabled: a
@@ -321,6 +325,14 @@ func (c routerConfig) validate() error {
 	}
 	if c.EgressPolicyCacheTTL < 0 {
 		return fmt.Errorf("--egress-policy-cache-ttl must not be negative, got %s (0 disables the cache)", c.EgressPolicyCacheTTL)
+	}
+	if c.NativeTLSDestination != "" {
+		if c.Mode != ModeEgress || c.atenetRouter() != atenetRouterEnvoy || c.EgressPolicyCacheTTL != 0 || len(c.CredentialProvider.Addresses) != 0 {
+			return fmt.Errorf("--native-tls-destination requires egress-only Envoy, zero policy cache TTL, and no credential provider")
+		}
+		if _, err := egress.NativeTLSDestination(c.NativeTLSDestination); err != nil {
+			return err
+		}
 	}
 	if c.DrainDelay < 0 {
 		return fmt.Errorf("--drain-delay must not be negative, got %s", c.DrainDelay)

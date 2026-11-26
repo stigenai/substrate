@@ -91,6 +91,9 @@ type Handler struct {
 	// A special case of a map consisting of a single entry with empty string
 	// ("") key will match all provider URIs.
 	providers map[string]credprovider.CredentialProviderClient
+	// nativeTLS, when set, restricts the handler to one pinned destination.
+	// See NewNativeTLS.
+	nativeTLS *egresspolicy.Destination
 }
 
 // New builds the egress handler. loadActorIdentityRoots yields the egress
@@ -124,6 +127,9 @@ func (h *Handler) Direction() extproc.Direction { return extproc.DirectionEgress
 // An empty chain name is a non-Envoy dataplane, which calls out for the
 // CONNECT alone. Anything unrecognized is refused, not guessed.
 func (h *Handler) HandleRequestHeaders(ctx context.Context, md *extproc.RequestMetadata) (extproc.Result, error) {
+	if h.nativeTLS != nil && md.Attribute(extproc.FilterChainNameAttribute) != extproc.EgressFilterChainName {
+		return extproc.Result{}, extproc.NewReqError(envoy_type.StatusCode_Forbidden, deniedBody)
+	}
 	switch leg := md.Attribute(extproc.FilterChainNameAttribute); leg {
 	case extproc.EgressFilterChainName, "":
 		return h.handleConnect(ctx, md, leg)
@@ -189,6 +195,15 @@ func (h *Handler) handleConnect(ctx context.Context, md *extproc.RequestMetadata
 		return extproc.Result{}, err
 	}
 	rules := policy.SNIRules(dest.Port)
+	if h.nativeTLS != nil {
+		if err := h.validateNativeActor(ctx, md, ref); err != nil {
+			return extproc.Result{}, err
+		}
+		if dest.Port != h.nativeTLS.Port || !policy.AllowsExactTLSPassthrough(*h.nativeTLS) {
+			return extproc.Result{}, extproc.NewReqError(envoy_type.StatusCode_Forbidden, deniedBody)
+		}
+		rules = []egresspolicy.SNIRule{{Pattern: h.nativeTLS.Hostname, Mode: egresspolicy.SNIModePassthrough}}
+	}
 	dynamicMetadata, err := connectMetadata(dest, rules)
 	if err != nil {
 		return extproc.Result{}, err

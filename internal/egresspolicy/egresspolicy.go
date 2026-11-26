@@ -174,6 +174,22 @@ const (
 	SNIModePassthrough SNIMode = "passthrough"
 )
 
+// AllowsExactTLSPassthrough requires a rule naming only the pinned host and
+// port. Broad wildcard or multi-destination grants do not enable native TLS.
+func (p *Policy) AllowsExactTLSPassthrough(dest Destination) bool {
+	if dest.Hostname == "" || dest.Port == 0 || dest.IP.IsValid() {
+		return false
+	}
+	for _, rule := range p.rules {
+		if rule.protocol == protocolTLSPassthrough && !rule.anyPort &&
+			len(rule.ports) == 1 && rule.ports[0] == dest.Port &&
+			len(rule.patterns) == 1 && rule.patterns[0].String() == dest.Hostname {
+			return true
+		}
+	}
+	return false
+}
+
 // SNIRule is an SNI pattern and the mode applied when it matches first.
 type SNIRule struct {
 	Pattern string

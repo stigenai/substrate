@@ -705,6 +705,7 @@ func (s *AteWorkerService) RunWorkload(ctx context.Context, req *ateworkerpb.Run
 	if err != nil {
 		return nil, err
 	}
+	s.bindSupervisor(req.GetActorUid(), req.GetSpec(), req.GetActorDirs(), req.GetRunscPath())
 	rcmd := &runsc{
 		path:           req.GetRunscPath(),
 		actorUID:       req.GetActorUid(),
@@ -1184,6 +1185,7 @@ func (s *AteWorkerService) RestoreWorkload(ctx context.Context, req *ateworkerpb
 	if err != nil {
 		return nil, err
 	}
+	s.bindSupervisor(req.GetActorUid(), req.GetSpec(), req.GetActorDirs(), req.GetRunscPath())
 	rcmd := &runsc{
 		path:           req.GetRunscPath(),
 		actorUID:       req.GetActorUid(),
@@ -1359,7 +1361,11 @@ func (s *AteWorkerService) TerminateWorkload(ctx context.Context, req *ateworker
 	if hosted != nil {
 		s.readFinal(ctx, hosted)
 	}
-	err := s.terminateWorkload(ctx, attribution.Ref, attribution.UID, req.GetRunscPath(), req.GetActorDirs(), req.GetSpec().GetContainers())
+	activation, err := s.stopSupervisorProcesses(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	err = s.terminateWorkload(ctx, attribution.Ref, attribution.UID, req.GetRunscPath(), req.GetActorDirs(), req.GetSpec().GetContainers())
 	s.recordFinalIfEnded(ctx, hosted)
 	if err != nil {
 		return nil, fmt.Errorf("failed to terminate workload: %w", err)
@@ -1367,7 +1373,7 @@ func (s *AteWorkerService) TerminateWorkload(ctx context.Context, req *ateworker
 
 	s.actorLogger.EmitLifecycleLog(ctx, "Actor terminated", attribution)
 
-	return &ateworkerpb.TerminateWorkloadResponse{}, nil
+	return &ateworkerpb.TerminateWorkloadResponse{SupervisorStop: supervisorStopped(req.GetActorUid(), activation)}, nil
 }
 
 func (s *AteWorkerService) terminateWorkload(ctx context.Context, actorRef resources.ActorRef, actorUID, runscPath string, actorDirs *ateworkerpb.ActorDirs, containers []*ateworkerpb.Container) error {

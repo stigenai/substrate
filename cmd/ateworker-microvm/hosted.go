@@ -29,6 +29,7 @@ import (
 	"go.ate.dev/substrate/internal/ateworker/cgroup"
 	"go.ate.dev/substrate/internal/atunnel/ingress"
 	"go.ate.dev/substrate/internal/netns"
+	"go.ate.dev/substrate/internal/proto/ateworkerpb"
 	"go.ate.dev/substrate/internal/resources"
 	"go.ate.dev/substrate/internal/workerstats"
 )
@@ -51,6 +52,11 @@ type hostedActor struct {
 	// memoryBytes is the actor's memory limit, what it books on the worker.
 	// Immutable after admission.
 	memoryBytes int64
+
+	// supervisor* retain a protected activation's launch request, guarded by
+	// actorsMu, so termination can prove it stopped exactly that activation.
+	supervisorSpec *ateworkerpb.WorkloadSpec
+	supervisorDirs *ateworkerpb.ActorDirs
 }
 
 // admitActor reserves capacity before network setup. An actor that is already

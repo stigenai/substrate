@@ -517,7 +517,11 @@ func (s *AteWorkerService) TerminateWorkload(ctx context.Context, req *ateworker
 	if hosted != nil {
 		s.readFinal(ctx, hosted)
 	}
-	err := s.terminateWorkload(ctx, attribution, req.GetActorDirs())
+	activation, err := s.stopSupervisorProcesses(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	err = s.terminateWorkload(ctx, attribution, req.GetActorDirs())
 	s.recordFinalIfEnded(ctx, hosted)
 	if err != nil {
 		return nil, fmt.Errorf("failed to terminate workload: %w", err)
@@ -525,7 +529,7 @@ func (s *AteWorkerService) TerminateWorkload(ctx context.Context, req *ateworker
 
 	s.actorLogger.EmitLifecycleLog(ctx, "Actor terminated", attribution)
 
-	return &ateworkerpb.TerminateWorkloadResponse{}, nil
+	return &ateworkerpb.TerminateWorkloadResponse{SupervisorStop: supervisorStopped(req.GetActorUid(), activation)}, nil
 }
 
 // endPreviousActivation ends the activation a re-host is about to replace. A VM

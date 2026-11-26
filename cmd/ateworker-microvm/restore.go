@@ -156,6 +156,7 @@ func (s *AteWorkerService) RestoreWorkload(ctx context.Context, req *ateworkerpb
 		templateAtespace: req.GetActorTemplateAtespace(),
 		templateName:     req.GetActorTemplateName(),
 		containers:       req.GetSpec().GetContainers(),
+		spec:             req.GetSpec(),
 		assetPaths:       req.GetRuntimeAssetPaths(),
 		egressGateway:    req.GetEgressGateway(),
 		size:             sizing.FromLimits(req.GetResources().GetLimits()),
@@ -178,6 +179,7 @@ func (s *AteWorkerService) RestoreWorkload(ctx context.Context, req *ateworkerpb
 	if _, err := s.hostActor(ctx, attribution, resumesGuest, p.size.MemoryBytes); err != nil {
 		return nil, err
 	}
+	s.bindSupervisor(p.actorUID, p.spec, p.actorDirs)
 	defer func() {
 		if retErr != nil {
 			// Detached: the RPC's context may be what failed it.

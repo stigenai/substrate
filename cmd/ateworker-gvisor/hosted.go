@@ -58,6 +58,11 @@ type hostedActor struct {
 	memoryBytes int64
 	// memory kills the sandbox once it is stuck at its memory.high.
 	memory cgroup.MemoryGuard
+	// supervisor* retain a protected activation's launch request, guarded by
+	// actorsMu, so termination can prove it stopped exactly that activation.
+	supervisorSpec      *ateworkerpb.WorkloadSpec
+	supervisorDirs      *ateworkerpb.ActorDirs
+	supervisorRunscPath string
 }
 
 // admitActor reserves capacity before network setup. An actor that is already

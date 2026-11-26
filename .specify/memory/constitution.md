@@ -1,7 +1,7 @@
 <!--
 Sync Impact Report
-Version: (none) → 1.0.0
-Added: all principles and sections. This is the first ratification.
+Version: 1.0.0 → 2.0.0
+Changed: Principles I and VI. The fork is now a patch stack on an upstream release tag (`stigenai/main`), not a weekly merge of `upstream/main`. Checks use the v1.0 commands, because upstream removed the Makefile.
 Templates: there are no files in .specify/templates/* at this time. Run `specify init --here --ai claude` to add them.
 -->
 
@@ -16,7 +16,8 @@ This constitution adds the rules for the fork. If the two rules are different, u
 
 ### I. Upstream Compatibility First
 
-- `main` MUST stay a fast-forward or clean merge of `upstream/main` plus a small set of fork patches.
+- `stigenai/main` MUST be an upstream release tag plus a linear stack of fork commits. `FORK.md` gives the workflow.
+- Each fork commit MUST have the `Fork-Topic` and `Fork-Upstream` trailers. `hack/fork/fork.sh check` MUST pass.
 - Each fork patch MUST touch the minimum number of upstream files.
 - Do not reformat, rename or move upstream code in a fork patch. This causes merge conflicts and gives no value.
 - Use an extension point if there is one. Do not add a fork-only flag, proto field or config key to an upstream type.
@@ -28,15 +29,15 @@ This constitution adds the rules for the fork. If the two rules are different, u
 Use the first alternative that works:
 
 1. **No fork change:** use configuration, manifests or a public API.
-2. **Integration repository:** if the code runs *on* Substrate, put it in a different repository (see `docs/integration-repos.md`).
-3. **Plugin:** put it in `internal/plugins/<name>` with its own `go.mod`, and let it import only `pkg/` (see `internal/plugins/README.md`).
+2. **Integration repository:** if the code runs *on* Substrate, put it in a different repository (see `docs/project/integration-repos.md`).
+3. **Plugin:** implement an upstream plugin API, such as `api/credprovider` or `api/objectstore`, in its own repository (see "Plugins" in `docs/dev/code-layout.md`).
 4. **New file in the fork:** add new files and do not edit upstream files.
 5. **Edit an upstream file:** use this rung only if rungs 1 to 4 cannot work. Keep the edit small and record it in `FORK.md`.
 
 ### III. Upstream Small Changes
 
 - If a change is small, general and useful to upstream users, write it so we can donate it.
-- A change we can donate MUST follow all upstream rules. These rules cover tests, `make verify`, copyright headers, US spelling, no back-compat code and no issue references in commit messages.
+- A change we can donate MUST follow all upstream rules. These rules cover tests, `hack/verify-all.sh`, copyright headers, US spelling, no back-compat code and no issue references in commit messages.
 
 - A change we can donate MUST NOT contain stigenai names, internal hostnames, credentials, customer data or fork-only paths.
 - Keep each change we can donate in its own commit or branch, so it goes upstream without other fork work.
@@ -66,8 +67,8 @@ A human MUST do these steps:
 
 ### VI. Sync Often
 
-- Merge `upstream/main` into `main` at least one time each week.
-- After each sync, `make build`, `make test` and `make verify` MUST pass. Do not merge more fork work until they pass.
+- Rebase the stack onto each new upstream release tag with `hack/fork/fork.sh rebase <tag>`. Do not merge upstream into `stigenai/main`.
+- After each rebase, `go build ./...`, `go test -race ./...` and `hack/verify-all.sh` MUST pass. Do not add more fork work until they pass.
 - If a fork patch conflicts on two or more syncs, examine it again. Then move it to a plugin, donate it, or delete it.
 
 ## Development Workflow
@@ -84,4 +85,4 @@ A human MUST do these steps:
 - To change this constitution, edit this file in a PR, update the version and give the reason.
 - Versions use semver: MAJOR removes or redefines a principle, MINOR adds a principle or section, PATCH makes the text clearer.
 
-**Version**: 1.0.0 | **Ratified**: 2026-11-07 | **Last Amended**: 2026-11-07
+**Version**: 2.0.0 | **Ratified**: 2026-11-07 | **Last Amended**: 2026-11-26

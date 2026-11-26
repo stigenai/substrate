@@ -49,7 +49,7 @@ func (e *Env) DeleteAteSystem(ctx context.Context) error {
 	}
 
 	if e.Cfg.Kind {
-		manifest, err := e.Kustomize(installDir + "/kind")
+		manifest, err := e.Kustomize(installDir + "/" + e.Cfg.Profile())
 		if err != nil {
 			return err
 		}

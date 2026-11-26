@@ -215,6 +215,7 @@ func buildConfig(root string, env map[string]string, r *Resolved) (*Config, erro
 	cfg := &Config{
 		Root:              root,
 		Kind:              r.Bool("kindCluster.enabled"),
+		ProfileDir:        r.String("kindCluster.profile"),
 		Namespace:         r.String("namespace"),
 		Kubeconfig:        kubeconfig,
 		Context:           r.String("context"),

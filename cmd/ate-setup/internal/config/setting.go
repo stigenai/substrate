@@ -83,6 +83,10 @@ var Registry = []Setting{
 		Usage: "Name of the Kind cluster to target",
 	},
 	{
+		Key: "kindCluster.profile", Env: "ATE_INSTALL_PROFILE", Flag: "kind-profile", Kind: KindString, Default: "kind",
+		Usage: "Directory under manifests/ate-install that a Kind-profile install renders",
+	},
+	{
 		Key: "namespace", Env: "ATE_NAMESPACE", Flag: "namespace", Kind: KindString,
 		Default: installdefaults.SystemNamespace,
 		Usage:   "Namespace the control plane is installed into",

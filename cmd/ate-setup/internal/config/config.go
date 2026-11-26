@@ -89,6 +89,10 @@ type Config struct {
 	// Kind selects the local Kind install profile (ATE_INSTALL_KIND).
 	Kind bool
 
+	// ProfileDir is the manifests/ate-install directory a Kind-profile install
+	// renders, from ATE_INSTALL_PROFILE.
+	ProfileDir string
+
 	// Namespace is the namespace the control plane is installed into, from
 	// ATE_NAMESPACE. It defaults to the canonical installdefaults.SystemNamespace,
 	// so an install that does not set it is unaffected. The checked-in manifests
@@ -426,6 +430,14 @@ func (c *Config) WaitTimeout(historical time.Duration) time.Duration {
 		return c.RolloutTimeout
 	}
 	return historical
+}
+
+// Profile is the overlay directory a Kind-profile install renders.
+func (c *Config) Profile() string {
+	if c.ProfileDir == "" {
+		return "kind"
+	}
+	return c.ProfileDir
 }
 
 // Manifest resolves a path under manifests/ate-install.

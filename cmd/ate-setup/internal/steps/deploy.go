@@ -373,7 +373,7 @@ func (e *Env) DeployAteAPIServer(ctx context.Context) error {
 // apiServerManifestPath is the ate-api-server manifest for the environment.
 func (e *Env) apiServerManifestPath() string {
 	if e.Cfg.Kind {
-		return e.Cfg.Manifest("kind", "ate-api-server")
+		return e.Cfg.Manifest(e.Cfg.Profile(), "ate-api-server")
 	}
 	return e.Cfg.Manifest("ate-api-server.yaml")
 }
@@ -543,7 +543,7 @@ func (e *Env) DeployAtelet(ctx context.Context) error {
 // ateletManifestPath is the atelet manifest for the environment.
 func (e *Env) ateletManifestPath() string {
 	if e.Cfg.Kind {
-		return e.Cfg.Manifest("kind", "atelet")
+		return e.Cfg.Manifest(e.Cfg.Profile(), "atelet")
 	}
 	return e.Cfg.Manifest("atelet.yaml")
 }

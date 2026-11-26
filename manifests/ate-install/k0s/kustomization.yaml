@@ -1,0 +1,38 @@
+# Copyright 2026 The Agent Substrate Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# stigenai k0s profile (ATE_INSTALL_PROFILE=k0s, with ATE_INSTALL_KIND=true):
+# a self-managed k0s cluster. Like ../kind it keeps snapshots in an in-cluster
+# rustfs and runs the bundled postgres, but it has a real kubelet root
+# (/var/lib/k0s/kubelet), real storage, and the fleet's own OTLP collector, so
+# the bundled otel-collector and prometheus are left out.
+#
+# The S3 keys are NOT in git: create the ate-s3-credentials Secret (keys
+# AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY) in ate-system before install.
+# Private actor images: an ate-registry-auth dockerconfigjson Secret in
+# ate-system lets atelet pull them; kubelet pulls (control plane, worker pods)
+# still need imagePullSecrets on the namespaces' service accounts.
+# pod-certificate-controller.yaml is absent for the same reason as in ../kind.
+resources:
+  - ./ate-api-server
+  - ../ate-idp-server.yaml
+  - ../ate-controller.yaml
+  - ./atelet
+  - ../atenet-router.yaml
+  - ../ate-system-networkpolicies.yaml
+  - ate-otel-config.yaml
+  - ./rustfs

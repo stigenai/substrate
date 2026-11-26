@@ -1,0 +1,73 @@
+# Copyright 2026 The Agent Substrate Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# ../../kind/rustfs.yaml with a 50Gi volume and the keys read from the
+# ate-s3-credentials Secret instead of the rustfsadmin default.
+resources:
+  - ../../kind/rustfs.yaml
+
+patches:
+  - patch: |-
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: rustfs-data
+        namespace: ate-system
+      spec:
+        resources:
+          requests:
+            storage: 50Gi
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: rustfs
+        namespace: ate-system
+      spec:
+        template:
+          spec:
+            containers:
+            - name: rustfs
+              env:
+              - name: RUSTFS_ACCESS_KEY
+                value: null
+                valueFrom:
+                  secretKeyRef: {name: ate-s3-credentials, key: AWS_ACCESS_KEY_ID}
+              - name: RUSTFS_SECRET_KEY
+                value: null
+                valueFrom:
+                  secretKeyRef: {name: ate-s3-credentials, key: AWS_SECRET_ACCESS_KEY}
+  - patch: |-
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: rustfs-bucket-init
+        namespace: ate-system
+      spec:
+        template:
+          spec:
+            containers:
+            - name: create-bucket
+              env:
+              - name: AWS_ACCESS_KEY_ID
+                value: null
+                valueFrom:
+                  secretKeyRef: {name: ate-s3-credentials, key: AWS_ACCESS_KEY_ID}
+              - name: AWS_SECRET_ACCESS_KEY
+                value: null
+                valueFrom:
+                  secretKeyRef: {name: ate-s3-credentials, key: AWS_SECRET_ACCESS_KEY}

@@ -455,7 +455,7 @@ func TestValidateEgressPolicyRules(t *testing.T) {
 	exactHttpsRule := func(host string, paths ...string) *ateapi.EgressRule {
 		return &ateapi.EgressRule{Https: &ateapi.HttpsRule{Hostnames: []string{host}, Paths: paths}}
 	}
-	const badExactPath = `must start with "/" and contain no "?", "#", "." or ".." segment, "%2e", "%2f", "%5c" or backslash`
+	const badExactPath = `must start with "/" and contain no "?", "#", ";" or backslash, no "." or ".." segment, no malformed escape, no escape of a letter, digit, "-", ".", "_", "~", "%", "/", "\" or ";", no escape that decodes to invalid UTF-8, and no character that NFKC changes or control character`
 	passthroughRule := func(ports *ateapi.Ports, patterns ...string) *ateapi.EgressRule {
 		return &ateapi.EgressRule{TlsPassthrough: &ateapi.TlsPassthroughRule{Hostnames: patterns, Ports: ports}}
 	}
@@ -923,11 +923,11 @@ func TestValidateEgressPolicyRules(t *testing.T) {
 	}, {
 		name: "exact paths in one rule that are unsafe or malformed",
 		mutate: func(p *ateapi.EgressPolicy) {
-			p.Rules = []*ateapi.EgressRule{exactHttpsRule("chatgpt.com", "", "a", "/a?x=1", "/a#x", "/a/../b", "/a/./b", "/a/%2E./b", "/a%2fb", "/a%5cb", `/a\b`)}
+			p.Rules = []*ateapi.EgressRule{exactHttpsRule("chatgpt.com", "", "a", "/a?x=1", "/a#x", "/a/../b", "/a/./b", "/a/%2E./b", "/a%2fb", "/a%5cb", `/a\b`, "/a;b", "/a/%252e%252e/b")}
 		},
 		want: func() field.ErrorList {
 			var errs field.ErrorList
-			for i, path := range []string{"", "a", "/a?x=1", "/a#x", "/a/../b", "/a/./b", "/a/%2E./b", "/a%2fb", "/a%5cb", `/a\b`} {
+			for i, path := range []string{"", "a", "/a?x=1", "/a#x", "/a/../b", "/a/./b", "/a/%2E./b", "/a%2fb", "/a%5cb", `/a\b`, "/a;b", "/a/%252e%252e/b"} {
 				errs = append(errs, field.Invalid(rules.Index(0).Child("https", "paths").Index(i), path, badExactPath))
 			}
 			return errs

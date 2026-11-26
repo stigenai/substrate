@@ -22,6 +22,7 @@ package ateworkervalidation
 import (
 	context "context"
 
+	v1 "go.ate.dev/substrate/api/ateapi/v1"
 	ateworkerpb "go.ate.dev/substrate/internal/proto/ateworkerpb"
 	operation "k8s.io/apimachinery/pkg/api/operation"
 	safe "k8s.io/apimachinery/pkg/api/safe"
@@ -2503,6 +2504,34 @@ func Validate_WorkloadSpec(
 				return oldObj.Containers
 			})
 		errs = append(errs, fn(fldPath.Child("containers"), obj.Containers, oldVal, oldObj != nil)...)
+	}
+
+	{ // field ateworkerpb.WorkloadSpec.SupervisorActivation
+		fn := func(
+			fldPath *field.Path,
+			obj, oldObj *v1.SupervisorActivation,
+			oldValueCorrelated bool) (errs field.ErrorList) {
+			// don't revalidate unchanged data
+			if oldValueCorrelated && op.Type == operation.Update {
+				if ateDeepEqual(obj, oldObj) {
+					return nil
+				}
+			}
+			// call field-attached validations
+			earlyReturn := false
+			if e := validate.OptionalPointer(ctx, op, fldPath, obj, oldObj).MarkShortCircuit(); len(e) != 0 {
+				earlyReturn = true
+			}
+			if earlyReturn {
+				return // do not proceed
+			}
+			return
+		}
+		oldVal := safe.Field(oldObj,
+			func(oldObj *ateworkerpb.WorkloadSpec) *v1.SupervisorActivation {
+				return oldObj.SupervisorActivation
+			})
+		errs = append(errs, fn(fldPath.Child("supervisor_activation"), obj.SupervisorActivation, oldVal, oldObj != nil)...)
 	}
 
 	return errs

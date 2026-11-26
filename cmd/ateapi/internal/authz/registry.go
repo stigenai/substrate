@@ -225,6 +225,9 @@ var defaultRPCPermissions = map[string]rpcRule{
 		tagChecks, tagErrs := onSourceTag(r.GetActor().GetSourceTag(), field.NewPath("actor", "source_tag"))
 		return both(checks, errs, tagChecks, tagErrs)
 	})),
+	ateapi.Control_ReadSupervisorTermination_FullMethodName: rule(checksOf(func(r *ateapi.ReadSupervisorTerminationRequest) ([]check, field.ErrorList) {
+		return onActor(RelationCanGet, r.GetActor(), field.NewPath("actor"))
+	})),
 	ateapi.Control_GetActor_FullMethodName: rule(checksOf(func(r *ateapi.GetActorRequest) ([]check, field.ErrorList) {
 		return onActor(RelationCanGet, r.GetActor(), field.NewPath("actor"))
 	})),

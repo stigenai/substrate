@@ -16,6 +16,7 @@ syntax = "proto3";
 
 package atelet;
 
+import "api/ateapi/v1/ateapi.proto";
 import "google/protobuf/timestamp.proto";
 
 option go_package = "go.ate.dev/substrate/internal/proto/ateletpb";
@@ -547,6 +548,8 @@ message TerminateRequest {
 }
 
 message TerminateResponse {
+  // Set when the worker stopped a protected supervisor activation.
+  substrate.ateapi.v1.SupervisorTerminationAck supervisor_stop = 1;
 }
 
 message RunRequest {
@@ -628,6 +631,12 @@ message WorkloadSpec {
   // +k8s:listType=map
   // +k8s:listMapKey=name
   repeated Volume volumes = 2;
+
+  // Server-owned activation delivered only over the authenticated node path.
+  //
+  // +k8s:optional
+  // +k8s:opaqueType
+  substrate.ateapi.v1.SupervisorActivation supervisor_activation = 3;
 }
 
 message DurableDirVolumeSource {

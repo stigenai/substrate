@@ -16,6 +16,8 @@ syntax = "proto3";
 
 package ateworker;
 
+import "api/ateapi/v1/ateapi.proto";
+
 option go_package = "go.ate.dev/substrate/internal/proto/ateworkerpb";
 
 // Worker is the interface to control a single gVisor (or, in the future microVM)
@@ -190,6 +192,8 @@ message TerminateWorkloadRequest {
 }
 
 message TerminateWorkloadResponse {
+  // Set when the worker stopped a protected supervisor activation.
+  substrate.ateapi.v1.SupervisorTerminationAck supervisor_stop = 1;
 }
 
 message RunWorkloadRequest {
@@ -268,6 +272,12 @@ message WorkloadSpec {
   // +k8s:listType=map
   // +k8s:listMapKey=name
   repeated Container containers = 1;
+
+  // Retain this activation with the live workload before Run/Restore starts it.
+  //
+  // +k8s:optional
+  // +k8s:opaqueType
+  substrate.ateapi.v1.SupervisorActivation supervisor_activation = 2;
 }
 
 // A container's mounts split into four typed lists. Each list's key keeps

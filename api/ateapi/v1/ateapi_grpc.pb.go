@@ -34,6 +34,7 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	Control_GetActor_FullMethodName                   = "/substrate.ateapi.v1.Control/GetActor"
+	Control_ReadSupervisorTermination_FullMethodName  = "/substrate.ateapi.v1.Control/ReadSupervisorTermination"
 	Control_CreateActor_FullMethodName                = "/substrate.ateapi.v1.Control/CreateActor"
 	Control_UpdateActor_FullMethodName                = "/substrate.ateapi.v1.Control/UpdateActor"
 	Control_SuspendActor_FullMethodName               = "/substrate.ateapi.v1.Control/SuspendActor"
@@ -85,6 +86,8 @@ const (
 type ControlClient interface {
 	// Get an Actor.
 	GetActor(ctx context.Context, in *GetActorRequest, opts ...grpc.CallOption) (*Actor, error)
+	// Read an immutable exact-activation deletion receipt. Missing proof is NotFound.
+	ReadSupervisorTermination(ctx context.Context, in *ReadSupervisorTerminationRequest, opts ...grpc.CallOption) (*ReadSupervisorTerminationResponse, error)
 	// Create a new Actor deriving from a given ActorTemplate.
 	CreateActor(ctx context.Context, in *CreateActorRequest, opts ...grpc.CallOption) (*Actor, error)
 	// Update mutable fields on an existing Actor.
@@ -209,6 +212,16 @@ func (c *controlClient) GetActor(ctx context.Context, in *GetActorRequest, opts 
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Actor)
 	err := c.cc.Invoke(ctx, Control_GetActor_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *controlClient) ReadSupervisorTermination(ctx context.Context, in *ReadSupervisorTerminationRequest, opts ...grpc.CallOption) (*ReadSupervisorTerminationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReadSupervisorTerminationResponse)
+	err := c.cc.Invoke(ctx, Control_ReadSupervisorTermination_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -633,6 +646,8 @@ func (c *controlClient) DeleteAtespaceAccessPolicy(ctx context.Context, in *Dele
 type ControlServer interface {
 	// Get an Actor.
 	GetActor(context.Context, *GetActorRequest) (*Actor, error)
+	// Read an immutable exact-activation deletion receipt. Missing proof is NotFound.
+	ReadSupervisorTermination(context.Context, *ReadSupervisorTerminationRequest) (*ReadSupervisorTerminationResponse, error)
 	// Create a new Actor deriving from a given ActorTemplate.
 	CreateActor(context.Context, *CreateActorRequest) (*Actor, error)
 	// Update mutable fields on an existing Actor.
@@ -755,6 +770,9 @@ type UnimplementedControlServer struct{}
 
 func (UnimplementedControlServer) GetActor(context.Context, *GetActorRequest) (*Actor, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetActor not implemented")
+}
+func (UnimplementedControlServer) ReadSupervisorTermination(context.Context, *ReadSupervisorTerminationRequest) (*ReadSupervisorTerminationResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReadSupervisorTermination not implemented")
 }
 func (UnimplementedControlServer) CreateActor(context.Context, *CreateActorRequest) (*Actor, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateActor not implemented")
@@ -914,6 +932,24 @@ func _Control_GetActor_Handler(srv interface{}, ctx context.Context, dec func(in
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ControlServer).GetActor(ctx, req.(*GetActorRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Control_ReadSupervisorTermination_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReadSupervisorTerminationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlServer).ReadSupervisorTermination(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Control_ReadSupervisorTermination_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlServer).ReadSupervisorTermination(ctx, req.(*ReadSupervisorTerminationRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1666,6 +1702,10 @@ var Control_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetActor",
 			Handler:    _Control_GetActor_Handler,
+		},
+		{
+			MethodName: "ReadSupervisorTermination",
+			Handler:    _Control_ReadSupervisorTermination_Handler,
 		},
 		{
 			MethodName: "CreateActor",

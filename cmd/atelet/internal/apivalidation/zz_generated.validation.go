@@ -22,6 +22,7 @@ package apivalidation
 import (
 	context "context"
 
+	v1 "go.ate.dev/substrate/api/ateapi/v1"
 	ateletpb "go.ate.dev/substrate/internal/proto/ateletpb"
 	operation "k8s.io/apimachinery/pkg/api/operation"
 	safe "k8s.io/apimachinery/pkg/api/safe"
@@ -4869,6 +4870,34 @@ func Validate_WorkloadSpec(
 				return oldObj.Volumes
 			})
 		errs = append(errs, fn(fldPath.Child("volumes"), obj.Volumes, oldVal, oldObj != nil)...)
+	}
+
+	{ // field ateletpb.WorkloadSpec.SupervisorActivation
+		fn := func(
+			fldPath *field.Path,
+			obj, oldObj *v1.SupervisorActivation,
+			oldValueCorrelated bool) (errs field.ErrorList) {
+			// don't revalidate unchanged data
+			if oldValueCorrelated && op.Type == operation.Update {
+				if ateDeepEqual(obj, oldObj) {
+					return nil
+				}
+			}
+			// call field-attached validations
+			earlyReturn := false
+			if e := validate.OptionalPointer(ctx, op, fldPath, obj, oldObj).MarkShortCircuit(); len(e) != 0 {
+				earlyReturn = true
+			}
+			if earlyReturn {
+				return // do not proceed
+			}
+			return
+		}
+		oldVal := safe.Field(oldObj,
+			func(oldObj *ateletpb.WorkloadSpec) *v1.SupervisorActivation {
+				return oldObj.SupervisorActivation
+			})
+		errs = append(errs, fn(fldPath.Child("supervisor_activation"), obj.SupervisorActivation, oldVal, oldObj != nil)...)
 	}
 
 	return errs

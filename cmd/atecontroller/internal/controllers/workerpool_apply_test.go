@@ -1177,3 +1177,31 @@ func TestBuildDeploymentPreview(t *testing.T) {
 		})
 	}
 }
+
+func TestGuestDevicesFlag(t *testing.T) {
+	tests := []struct {
+		name    string
+		class   atev1.WorkerPoolSandboxClass
+		wantArg string
+	}{
+		{"microvm with fuse", atev1.WorkerPoolSandboxClass{Name: atev1.SandboxClassMicroVM, GuestDevices: []atev1.GuestDevice{atev1.GuestDeviceFUSE}}, "--guest-devices=fuse"},
+		{"microvm without devices", atev1.WorkerPoolSandboxClass{Name: atev1.SandboxClassMicroVM}, ""},
+		{"gvisor", atev1.WorkerPoolSandboxClass{Name: atev1.SandboxClassGvisor}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wp := testWorkerPoolApplyConfig(nil)
+			wp.Spec.SandboxClasses = []atev1.WorkerPoolSandboxClass{tt.class}
+			args := buildDeploymentApplyConfig(wp, workerOTelSettings{}, installdefaults.SystemNamespace, installdefaults.AteletServiceAccount, installdefaults.RouterServiceAccount, egresspolicy.DNSEgressPolicyEnforceInAtunnel).Spec.Template.Spec.Containers[0].Args
+			var got string
+			for _, a := range args {
+				if strings.HasPrefix(a, "--guest-devices") {
+					got = a
+				}
+			}
+			if got != tt.wantArg {
+				t.Errorf("guest devices arg = %q, want %q; args = %v", got, tt.wantArg, args)
+			}
+		})
+	}
+}

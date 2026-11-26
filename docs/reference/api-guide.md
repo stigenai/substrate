@@ -23,7 +23,7 @@ The `WorkerPool` defines the pool of physical "warm" compute capacity. It manage
 | :--- | :--- | :--- |
 | `replicas` | `int32` | **Required.** Number of physical standby pods to maintain in the cluster. |
 | `workerImage` | `string` | **Required.** The container image for the `ateworker` process (e.g. `ko://go.ate.dev/substrate/cmd/ateworker-gvisor`). |
-| `sandboxClasses` | `[]WorkerPoolSandboxClass` | **Required.** The sandbox runtime families the pool runs; exactly one entry today. Each entry has `name` (**required**, `gvisor` or `microvm`, immutable), which drives the worker pod shape (e.g. KVM device mounts, node placement), and `configRef.name` (optional), which names a cluster-scoped [`SandboxConfig`](#3-sandboxconfig-the-sandbox-itself) of the same class. Without `configRef`, the pool uses the class default (see [Class default](#class-default)). The controller records the result in `status.sandboxClasses`. The sandbox binaries an actor boots with come from the `SandboxConfig` the pool of its assigned worker resolved. |
+| `sandboxClasses` | `[]WorkerPoolSandboxClass` | **Required.** The sandbox runtime families the pool runs; exactly one entry today. Each entry has `name` (**required**, `gvisor` or `microvm`, immutable), which drives the worker pod shape (e.g. KVM device mounts, node placement), and `configRef.name` (optional), which names a cluster-scoped [`SandboxConfig`](#3-sandboxconfig-the-sandbox-itself) of the same class. A `microvm` entry can also set `guestDevices` (see [Guest devices](#guest-devices-guestdevices)). Without `configRef`, the pool uses the class default (see [Class default](#class-default)). The controller records the result in `status.sandboxClasses`. The sandbox binaries an actor boots with come from the `SandboxConfig` the pool of its assigned worker resolved. |
 | `template` | `WorkerPoolPodTemplate` | **Optional.** Metadata, scheduling, and resource settings for worker workloads. |
 
 #### `WorkerPoolPodTemplate` (`spec.template`)
@@ -128,6 +128,25 @@ device, sharing one, or resuming onto compatible hardware.
 A `nvidia.com/gpu` pool limit is now an ordinary extended resource: it places the
 worker pod on a GPU node and reserves the device, and nothing else reads it.
 
+
+### Guest devices (`guestDevices`)
+
+A `microvm` entry in `sandboxClasses` can give its actors a device node from a fixed allowlist. The only value now is `fuse` (`/dev/fuse`, char 10:229). It lets an actor mount a FUSE filesystem in its guest.
+
+For each name, the microVM worker adds the node to the OCI spec it sends to the kata agent. It also adds a device cgroup rule that allows the node. The agent creates the node in the container's `/dev` in the guest. The guest kernel serves the device, so the actor gets no host device. The API server refuses `guestDevices` on a `gvisor` entry.
+
+The node alone does not let an actor mount. The container must also ask for `SYS_ADMIN` in [`securityContext.capabilities`](#container-capabilities-securitycontextcapabilities). To send only these actors to the pool, put a label on the `WorkerPool` and match it with the template's `workerSelector`:
+
+```yaml
+kind: WorkerPool
+metadata:
+  labels:
+    example.com/guest-device-fuse: "true"
+spec:
+  sandboxClasses:
+  - name: microvm
+    guestDevices: [fuse]
+```
 
 ### Status (`WorkerPoolStatus`)
 

@@ -656,7 +656,7 @@ func (s *AteWorkerService) buildActorContainers(actorUID string, actorDirs *atew
 		cn := c.GetName()
 		bundle := ociBundlePath(actorDirs, cn)
 		spec := ocispec.Build(ocispec.Options{ActorUID: actorUID, ActorDirs: actorDirs, Container: c})
-		if err := ocispec.ShapeMicroVM(spec, ocispec.MicroVMOptions{ActorDirs: actorDirs, ContainerName: cn}); err != nil {
+		if err := ocispec.ShapeMicroVM(spec, ocispec.MicroVMOptions{ActorDirs: actorDirs, ContainerName: cn, GuestDevices: s.guestDevices}); err != nil {
 			return nil, fmt.Errorf("while shaping the OCI spec for %q: %w", cn, err)
 		}
 		// Compose the bundle rootfs from the node's cached image layers (an

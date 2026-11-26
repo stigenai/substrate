@@ -92,6 +92,17 @@ type workerOTelSettings struct {
 	MetricsExporter string
 }
 
+// guestDevices returns the device names the pool's sandbox classes ask for.
+func guestDevices(wp *atev1.WorkerPool) []string {
+	var names []string
+	for _, c := range wp.Spec.SandboxClasses {
+		for _, d := range c.GuestDevices {
+			names = append(names, string(d))
+		}
+	}
+	return names
+}
+
 // workerPoolLabel names the WorkerPool on each of its worker pods.
 const workerPoolLabel = "ate.dev/worker-pool"
 
@@ -144,6 +155,13 @@ func buildDeploymentApplyConfig(wp *atev1.WorkerPool, otel workerOTelSettings, s
 	// has.
 	if brokerIdentity := installdefaults.SPIFFEID(systemNamespace, ateletServiceAccount); brokerIdentity != installdefaults.AteletSPIFFEID(installdefaults.SystemNamespace) {
 		args = append(args, "--atunnel-broker-identity="+brokerIdentity)
+	}
+
+	// Only a microvm class carries guestDevices, and ateworker-gvisor has no
+	// such flag. Pass it only when set, so a worker image that does not know
+	// the flag still starts.
+	if devices := guestDevices(wp); len(devices) > 0 {
+		args = append(args, "--guest-devices="+strings.Join(devices, ","))
 	}
 
 	args = append(args,

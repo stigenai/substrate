@@ -34,7 +34,7 @@ import (
 	"go.ate.dev/substrate/cmd/ate-setup/internal/kustomize"
 )
 
-// TestEgressDNSCacheSettings requires ALL and the resolved address filter on
+// TestEgressDNSCacheSettings requires V4_PREFERRED and the resolved address filter on
 // every dynamic forward proxy DNS cache in the install tree, so a new egress
 // manifest is checked the day it is added rather than the day it is installed.
 // atenet-egress.yaml says why.
@@ -108,8 +108,8 @@ func requireDNSCacheSettings(t *testing.T, caches []map[string]any) {
 	// A sample of the denied ranges: loopback and link-local in both families.
 	mustDeny := []string{"127.0.0.0/8", "169.254.0.0/16", "::1/128", "fe80::/10"}
 	for _, cache := range caches {
-		if got := cache["dns_lookup_family"]; got != "ALL" {
-			t.Errorf("dns_cache_config %v: dns_lookup_family = %v, want ALL", cache["name"], got)
+		if got := cache["dns_lookup_family"]; got != "V4_PREFERRED" {
+			t.Errorf("dns_cache_config %v: dns_lookup_family = %v, want V4_PREFERRED", cache["name"], got)
 		}
 		var denied []string
 		filter, _ := cache["resolved_address_filter"].(map[string]any)

@@ -551,6 +551,8 @@ func TestMITMLegPicksCredentialByPath(t *testing.T) {
 		{"scoped path gets the scoped credential", []*ateapi.EgressRule{catchAll, scoped}, "/zach-source/claude-factory.git/info/refs?service=git-receive-pack", "ate-secret://k8s/default/scoped"},
 		{"other path gets the catch-all", []*ateapi.EgressRule{scoped, catchAll}, "/stigenai/substrate.git/info/refs?service=git-receive-pack", "ate-secret://k8s/default/catchall"},
 		{"dot-dot cannot pick the catch-all", []*ateapi.EgressRule{scoped, catchAll}, "/stigenai/../zach-source/x.git/info/refs", ""},
+		{"path parameter dot-dot is denied", []*ateapi.EgressRule{scoped, catchAll}, "/zach-source/..;/stigenai/x", ""},
+		{"double-encoded dot is denied", []*ateapi.EgressRule{scoped, catchAll}, "/zach-source/%252e%252e/stigenai/x", ""},
 		{"encoded slash is denied", []*ateapi.EgressRule{scoped, catchAll}, "/stigenai%2f..%2fzach-source/x", ""},
 		{"only scoped rules deny other paths", []*ateapi.EgressRule{scoped}, "/stigenai/x", ""},
 		{"only scoped rules allow the connection and the scoped path", []*ateapi.EgressRule{scoped}, "/zach-source/x", "ate-secret://k8s/default/scoped"},

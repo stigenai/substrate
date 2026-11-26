@@ -17,6 +17,7 @@ package workerservice
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -43,71 +44,120 @@ func (s *Server) MintSupervisorBootstrap(ctx context.Context, req *ateapi.MintSu
 		return nil, err
 	}
 	// Every refusal looks the same to the caller; the reason goes to the log.
-	deny := func(reason string) error {
-		slog.WarnContext(ctx, "Denied a supervisor bootstrap request", slog.String("reason", reason), slog.String("caller_node", caller.NodeName))
+	deny := func(reason error) error {
+		slog.WarnContext(ctx, "Denied a supervisor bootstrap request", slog.Any("reason", reason), slog.String("caller_node", caller.NodeName))
 		return apierror.PermissionDenied("supervisor bootstrap denied")
 	}
 	if s.kube == nil || s.actorIDJWTPool == nil || s.actorJWTIssuer == "" {
-		return nil, deny("issuer not configured")
+		return nil, deny(errors.New("issuer not configured"))
 	}
 	if errs := apivalidation.ValidateMintSupervisorBootstrapRequest(ctx, req); len(errs) > 0 {
-		return nil, deny("invalid request")
+		return nil, deny(errors.New("invalid request"))
 	}
-	actorRef := resources.ActorRefFromObjectRef(req.GetActor())
-	actor, err := s.store.GetActor(ctx, actorRef)
+	actor, worker, err := s.bootstrapActor(ctx, req, caller)
 	if err != nil {
-		return nil, deny("actor not readable")
+		return nil, deny(err)
+	}
+	if err := s.bootstrapTemplateMatches(ctx, actor); err != nil {
+		return nil, deny(err)
+	}
+	if err := s.currentBootstrapHost(ctx, caller, worker); err != nil {
+		return nil, deny(err)
+	}
+	// Re-read after the external identity observations: an actor that changed
+	// meanwhile gets no token.
+	current, err := s.store.GetActor(ctx, resources.ActorRefFromObjectRef(req.GetActor()))
+	if err != nil || current.GetMetadata().GetVersion() != actor.GetMetadata().GetVersion() || current.GetMetadata().GetUid() != req.GetActorUid() {
+		return nil, deny(errors.New("actor changed during verification"))
+	}
+
+	claims := s.bootstrapClaims(actor, caller, time.Now().Truncate(time.Second))
+	token, err := s.actorIDJWTPool.SignJWT(claims)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to sign a supervisor bootstrap token", slog.Any("err", err))
+		return nil, apierror.Unavailable("supervisor signer unavailable")
+	}
+	return &ateapi.MintSupervisorBootstrapResponse{Token: token}, nil
+}
+
+// bootstrapActor returns the actor and worker the request names, when the
+// actor is starting or running on the calling node with exactly the requested
+// activation.
+func (s *Server) bootstrapActor(ctx context.Context, req *ateapi.MintSupervisorBootstrapRequest, caller *ateletauth.Caller) (*ateapi.Actor, *ateapi.Worker, error) {
+	actor, err := s.store.GetActor(ctx, resources.ActorRefFromObjectRef(req.GetActor()))
+	if err != nil {
+		return nil, nil, errors.New("actor not readable")
 	}
 	if actor.GetMetadata().GetUid() != req.GetActorUid() {
-		return nil, deny("actor UID differs")
+		return nil, nil, errors.New("actor UID differs")
 	}
 	if state := actor.GetStatus().GetState(); state != ateapi.ActorState_ACTOR_STATE_RESUMING && state != ateapi.ActorState_ACTOR_STATE_RUNNING {
-		return nil, deny("actor is not starting or running")
+		return nil, nil, errors.New("actor is not starting or running")
 	}
 	activation := actor.GetStatus().GetSupervisorActivation()
 	assignment := actor.GetStatus().GetWorkerAssignment()
 	if activation == nil || activation.GetActivationId() != req.GetActivationId() || activation.GetWorkerUid() != req.GetWorkerUid() ||
 		assignment.GetWorkerPodUid() != req.GetWorkerUid() || assignment.GetNodeName() != caller.NodeName {
-		return nil, deny("activation or assignment differs")
+		return nil, nil, errors.New("activation or assignment differs")
 	}
 	worker, err := s.store.GetWorker(ctx, assignment.GetWorker().GetName())
 	if err != nil || worker.GetWorkerPodUid() != req.GetWorkerUid() || worker.GetNodeName() != caller.NodeName || worker.GetStatus().GetState() != ateapi.WorkerState_WORKER_STATE_ACTIVE {
-		return nil, deny("worker differs or is not active")
+		return nil, nil, errors.New("worker differs or is not active")
 	}
 	bound, err := s.store.GetWorkerAssignment(ctx, worker.GetMetadata().GetName(), req.GetActorUid())
 	if err != nil || !proto.Equal(bound.GetActor(), req.GetActor()) || bound.GetActorUid() != req.GetActorUid() {
-		return nil, deny("worker does not hold the actor")
+		return nil, nil, errors.New("worker does not hold the actor")
 	}
-	node, err := s.kube.CoreV1().Nodes().Get(ctx, caller.NodeName, metav1.GetOptions{})
-	if err != nil || string(node.UID) != caller.NodeUID || node.DeletionTimestamp != nil {
-		return nil, deny("node identity differs")
-	}
-	pod, err := s.kube.CoreV1().Pods(worker.GetWorkerNamespace()).Get(ctx, worker.GetWorkerPod(), metav1.GetOptions{})
-	if err != nil || string(pod.UID) != req.GetWorkerUid() || pod.Spec.NodeName != caller.NodeName || pod.DeletionTimestamp != nil {
-		return nil, deny("worker pod identity differs")
-	}
+	return actor, worker, nil
+}
+
+// bootstrapTemplateMatches checks that the actor's current template still
+// describes exactly the recorded activation, and that the actor is not the
+// template's golden actor.
+func (s *Server) bootstrapTemplateMatches(ctx context.Context, actor *ateapi.Actor) error {
 	template, err := s.store.GetActorTemplate(ctx, resources.ActorTemplateRefFromObjectRef(actor.GetActorTemplate()))
-	if err != nil || supervisorbootstrap.IsGoldenActor(template, actor) {
-		return nil, deny("template not readable or actor is golden")
+	if err != nil {
+		return errors.New("template not readable")
 	}
+	if supervisorbootstrap.IsGoldenActor(template, actor) {
+		return errors.New("actor is golden")
+	}
+	activation := actor.GetStatus().GetSupervisorActivation()
 	expected, err := supervisorbootstrap.Describe(template)
 	if err != nil || expected == nil {
-		return nil, deny("template is not a protected supervisor")
+		return errors.New("template is not a protected supervisor")
 	}
 	expected.ActivationId, expected.WorkerUid = activation.GetActivationId(), activation.GetWorkerUid()
 	if !proto.Equal(expected, activation) {
-		return nil, deny("template differs from the recorded activation")
+		return errors.New("template differs from the recorded activation")
 	}
-	// Re-read after the external identity observations: an actor that changed
-	// meanwhile gets no token.
-	current, err := s.store.GetActor(ctx, actorRef)
-	if err != nil || current.GetMetadata().GetVersion() != actor.GetMetadata().GetVersion() || current.GetMetadata().GetUid() != req.GetActorUid() {
-		return nil, deny("actor changed during verification")
-	}
+	return nil
+}
 
-	now := time.Now().Truncate(time.Second)
+// currentBootstrapHost checks the live Kubernetes objects: the caller's node,
+// the worker Pod and the calling atelet's own Pod must all exist with the
+// recorded UIDs, on the caller's node, and not be terminating.
+func (s *Server) currentBootstrapHost(ctx context.Context, caller *ateletauth.Caller, worker *ateapi.Worker) error {
+	node, err := s.kube.CoreV1().Nodes().Get(ctx, caller.NodeName, metav1.GetOptions{})
+	if err != nil || string(node.UID) != caller.NodeUID || node.DeletionTimestamp != nil {
+		return errors.New("node identity differs")
+	}
+	for _, expected := range []struct{ namespace, name, uid string }{
+		{worker.GetWorkerNamespace(), worker.GetWorkerPod(), worker.GetWorkerPodUid()},
+		{caller.Namespace, caller.PodName, caller.PodUID},
+	} {
+		pod, err := s.kube.CoreV1().Pods(expected.namespace).Get(ctx, expected.name, metav1.GetOptions{})
+		if err != nil || string(pod.UID) != expected.uid || pod.Spec.NodeName != caller.NodeName || pod.DeletionTimestamp != nil {
+			return errors.New("pod identity differs")
+		}
+	}
+	return nil
+}
+
+func (s *Server) bootstrapClaims(actor *ateapi.Actor, caller *ateletauth.Caller, now time.Time) *actoridjwt.Claims {
 	meta := actor.GetMetadata()
-	claims := &actoridjwt.Claims{
+	activation := actor.GetStatus().GetSupervisorActivation()
+	return &actoridjwt.Claims{
 		Kind:       actoridjwt.KindActor,
 		Issuer:     s.actorJWTIssuer,
 		Subject:    actoridjwt.KindActor.SubjectPrefix() + "/" + meta.GetAtespace() + "/" + meta.GetName(),
@@ -135,10 +185,4 @@ func (s *Server) MintSupervisorBootstrap(ctx context.Context, req *ateapi.MintSu
 			},
 		},
 	}
-	token, err := s.actorIDJWTPool.SignJWT(claims)
-	if err != nil {
-		slog.ErrorContext(ctx, "Failed to sign a supervisor bootstrap token", slog.Any("err", err))
-		return nil, apierror.Unavailable("supervisor signer unavailable")
-	}
-	return &ateapi.MintSupervisorBootstrapResponse{Token: token}, nil
 }

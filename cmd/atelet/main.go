@@ -837,6 +837,9 @@ func (s *Atelet) Run(ctx context.Context, req *ateletpb.RunRequest) (resp *atele
 	if errs := apivalidation.ValidateRunRequest(ctx, req); len(errs) > 0 {
 		return nil, resources.ToAPIError(errs)
 	}
+	if err := validateSupervisorTarget(req.GetSpec(), req.GetWorkerPodUid()); err != nil {
+		return nil, err
+	}
 
 	actorUID := req.GetActorUid()
 	actorRef := resources.ActorRef{Atespace: req.GetAtespace(), Name: req.GetActorName()}
@@ -983,6 +986,9 @@ func recordSnapshotSize(ctx context.Context, file string, size int64, templateAt
 func (s *Atelet) Checkpoint(ctx context.Context, req *ateletpb.CheckpointRequest) (_ *ateletpb.CheckpointResponse, err error) {
 	if errs := apivalidation.ValidateCheckpointRequest(ctx, req); len(errs) > 0 {
 		return nil, resources.ToAPIError(errs)
+	}
+	if err := validateSupervisorSnapshot(req.GetSpec(), req.GetSnapshot()); err != nil {
+		return nil, err
 	}
 
 	actorUID := req.GetActorUid()
@@ -1622,6 +1628,12 @@ func readSnapshotManifest(dir string) ([]byte, error) {
 func (s *Atelet) Restore(ctx context.Context, req *ateletpb.RestoreRequest) (resp *ateletpb.RestoreResponse, err error) {
 	if errs := apivalidation.ValidateRestoreRequest(ctx, req); len(errs) > 0 {
 		return nil, resources.ToAPIError(errs)
+	}
+	if err := validateSupervisorTarget(req.GetSpec(), req.GetWorkerPodUid()); err != nil {
+		return nil, err
+	}
+	if err := validateSupervisorSnapshot(req.GetSpec(), req.GetSnapshot()); err != nil {
+		return nil, err
 	}
 
 	actorUID := req.GetActorUid()

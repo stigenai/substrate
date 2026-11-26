@@ -33,7 +33,7 @@ already persist as protobuf blobs, so this additive field needs no SQL migration
 `WorkerService.MintSupervisorBootstrap` takes actor reference, actor UID,
 activation ID, and worker UID. Only atelet mTLS is accepted. Issuance verifies
 current actor/worker assignment, the calling atelet's node incarnation, live
-worker Pod identity, approved template projection, and RESUMING/RUNNING state.
+worker and atelet Pod identities, approved template projection, and RESUMING/RUNNING state.
 The secret is delivered only to atelet, which projects it before starting or
 restoring the workload. Generic `Control.MintActorJwt` cannot emit this claim.
 
@@ -92,6 +92,24 @@ not read the projection, supervisor memory, or controller credential.
 
 Unit and real-store tests establish schema, authorization and replay behavior.
 Actual gVisor tests must establish UID isolation, root projection permissions,
-credential-free golden capture, Data restore freshness and old-activation denial.
+memory-free snapshots, restore freshness and old-activation denial.
 Deployment also requires exclusive AX writers/private API reachability and
 separate approved Claude/Codex account, tool, revocation and egress evidence.
+
+## Local verification
+
+The implementation has focused tests for actual ES256 signatures and exact
+claims, stale actor/activation/worker/node denials, deleted atelet and worker
+Pods, missing configuration, and secret-response log redaction. Projection
+tests exercise 0700/0600 modes, missing issuer rejection without creating a
+token file, and an empty projection that never calls the issuer. These use
+synthetic Kubernetes identities and local files, not a hosted gVisor actor.
+
+Real PostgreSQL tests retain the activation before workload conversion and
+rotate it across a new lifecycle activation while keeping the actor UID. They
+also cover the golden actor receiving no activation and the refusal to restore
+a memory snapshot. Existing ordinary actor and SystemInfo tests remain required.
+
+Actual gVisor UID isolation, snapshot/restore and deployed identity qualification
+are **NOT_RUN** at this source checkpoint. No production authority or account
+qualification follows from the local test results.

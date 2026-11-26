@@ -29,6 +29,7 @@ import (
 	"go.ate.dev/substrate/api/ateapi/v1"
 	"go.ate.dev/substrate/cmd/atelet/internal/ateletpath"
 	"go.ate.dev/substrate/cmd/atelet/internal/trustbundle"
+	"go.ate.dev/substrate/internal/apierror"
 	"go.ate.dev/substrate/internal/proto/ateletpb"
 	"go.ate.dev/substrate/internal/resources"
 	"go.ate.dev/substrate/internal/supervisorbootstrap"
@@ -480,4 +481,40 @@ func (r *systemInfoVolumeRefresher) projecting(bundleName string) []*registeredA
 		}
 	}
 	return targets
+}
+
+// validateSupervisorTarget refuses a spec whose supervisor activation names a
+// worker other than the one the request targets, before Run or Restore can
+// project a token for another worker. An empty activation projects nothing.
+func validateSupervisorTarget(spec *ateletpb.WorkloadSpec, workerPodUID string) error {
+	for _, ds := range supervisorDataSources(spec) {
+		if ds.GetProfile() != supervisorbootstrap.Profile {
+			return apierror.InvalidArgument("unsupported supervisor profile")
+		}
+		if (ds.GetActivationId() == "") != (ds.GetWorkerUid() == "") || (ds.GetWorkerUid() != "" && ds.GetWorkerUid() != workerPodUID) {
+			return apierror.InvalidArgument("supervisor target differs from the assigned worker")
+		}
+	}
+	return nil
+}
+
+// validateSupervisorSnapshot refuses to capture or restore guest memory for a
+// spec with a supervisor projection: that memory can hold the token.
+func validateSupervisorSnapshot(spec *ateletpb.WorkloadSpec, snap *ateletpb.Snapshot) error {
+	if len(supervisorDataSources(spec)) > 0 && snap.GetFidelity() == ateletpb.SnapshotFidelity_SNAPSHOT_FIDELITY_MEMORY {
+		return apierror.InvalidArgument("protected supervisor snapshots must exclude guest memory")
+	}
+	return nil
+}
+
+func supervisorDataSources(spec *ateletpb.WorkloadSpec) []*ateletpb.SupervisorBootstrapDataSource {
+	var sources []*ateletpb.SupervisorBootstrapDataSource
+	for _, v := range spec.GetVolumes() {
+		for _, ds := range v.GetSystemInfo().GetDataSources() {
+			if b := ds.GetSupervisorBootstrap(); b != nil {
+				sources = append(sources, b)
+			}
+		}
+	}
+	return sources
 }

@@ -168,6 +168,43 @@ third of its lifetime is left, so the upstream always gets a token with at
 least that much time remaining: 300 seconds for the 900-second lifetime above.
 Concurrent requests that need the same token share one mint.
 
+### Different credentials by path
+
+An `https` rule can name `pathPrefixes`, so two rules for one host inject
+different credentials. The rule with no prefixes decides every other path:
+
+```yaml
+rules:
+- https:
+    hostnames: ["github.com"]
+    pathPrefixes: ["/zach-source/"]
+    effects:
+      replaceHeaders:
+      - header: Authorization
+        prefix: "Basic "
+        credentialUri: ate-secret://k8s.io/default/ns1/github/zs-basic
+- https:
+    hostnames: ["github.com"]
+    effects:
+      replaceHeaders:
+      - header: Authorization
+        prefix: "Basic "
+        credentialUri: ate-secret://k8s.io/default/ns1/github/basic
+```
+
+Each prefix must start and end with `/`. A request matches a prefix when its
+path, before any `?`, starts with it. No escape is decoded, and the match is
+case sensitive. The longest matching prefix decides. A request whose path
+has a `.` or `..` segment, an encoded dot, an encoded slash or a backslash is
+denied when a rule with prefixes covers its host and port, because the origin
+could read it as a different path. Rules for one host and port must not share
+a prefix. The TLS connection is allowed when any `https` rule covers its
+server name, so a path that no rule covers is denied per request.
+
+Path prefixes select which credential is sent. They are not an authorization
+boundary: the rule with no prefixes must not hold a credential broader than a
+scoped one.
+
 ## What the gateway does
 
 | Situation | Outcome |

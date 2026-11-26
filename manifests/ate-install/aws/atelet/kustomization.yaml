@@ -1,0 +1,56 @@
+# Copyright 2026 The Agent Substrate Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# ../../k0s/atelet with S3 through IRSA instead of the in-cluster rustfs: the
+# endpoint, path-style and static key variables go, and the region and the
+# role of the service account come in.
+resources:
+  - ../../k0s/atelet
+
+patches:
+  - patch: |-
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: atelet
+        namespace: ate-system
+        annotations:
+          # EDIT
+          eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/ate-atelet
+  - patch: |-
+      apiVersion: apps/v1
+      kind: DaemonSet
+      metadata:
+        name: atelet
+        namespace: ate-system
+      spec:
+        template:
+          spec:
+            initContainers:
+            - name: objectstore-plugin
+              env:
+              - name: AWS_REGION
+                # EDIT
+                value: us-east-1
+              - name: AWS_ENDPOINT_URL
+                $patch: delete
+              - name: AWS_S3_USE_PATH_STYLE
+                $patch: delete
+              - name: AWS_ACCESS_KEY_ID
+                $patch: delete
+              - name: AWS_SECRET_ACCESS_KEY
+                $patch: delete

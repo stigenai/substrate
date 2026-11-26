@@ -1,0 +1,42 @@
+# Copyright 2026 The Agent Substrate Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# stigenai aws profile (ATE_INSTALL_PROFILE=aws, with ATE_INSTALL_KIND=true): a
+# k0s cluster on AWS. It builds on ../k0s (kubelet root /var/lib/k0s/kubelet,
+# the fleet's OTLP collector, no pod-certificate-controller.yaml, the optional
+# ate-registry-auth Secret) and changes the storage side:
+# - Snapshots go to a real S3 bucket. atelet and ate-api-server get AWS access
+#   from IRSA, so there is no static key and no in-cluster rustfs.
+# - Nothing here refers to GKE: no /home/kubernetes/bin hostPath and no GCP
+#   registry auth.
+# - The runsc tarballs come from a bucket you own: see sandboxconfig-gvisor.yaml
+#   and hack/aws/mirror-runsc.sh.
+#
+# Before install, edit the values marked EDIT: the region and the two role
+# ARNs in ./ate-api-server and ./atelet. Give ate-setup the bucket with
+# --storage-bucket-name and --snapshot-location s3://BUCKET/.
+#
+# ate-setup applies the default gvisor-default SandboxConfig with gs:// URLs.
+# After that, apply ./sandboxconfig-gvisor.yaml to move it to your S3 mirror.
+resources:
+  - ./ate-api-server
+  - ../ate-idp-server.yaml
+  - ../ate-controller.yaml
+  - ./atelet
+  - ../atenet-router.yaml
+  - ../ate-system-networkpolicies.yaml
+  - ate-otel-config.yaml

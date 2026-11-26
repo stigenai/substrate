@@ -1,0 +1,209 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: claude-factory worker <factory-worker@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 08:35:59 +0000
+Subject: [PATCH 07/30] Pin the CI tools for a cached development environment
+
+Fork-Topic: devenv
+Fork-Upstream: fork-only
+---
+ .gitignore                      |  5 ++
+ devenv.lock                     | 84 +++++++++++++++++++++++++++++++++
+ devenv.nix                      | 36 ++++++++++++++
+ devenv.yaml                     | 23 +++++++++
+ hack/util/verify-boilerplate.py |  2 +-
+ 5 files changed, 149 insertions(+), 1 deletion(-)
+ create mode 100644 devenv.lock
+ create mode 100644 devenv.nix
+ create mode 100644 devenv.yaml
+
+diff --git a/.gitignore b/.gitignore
+index dd55035f5..5488e5683 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -71,3 +71,8 @@ Thumbs.db
+ /cmd/benchmarking/isolate/fake-atelet/fake-atelet
+ /cmd/benchmarking/isolate/fake-workersync/fake-workersync
+ /demos/claude-code-multiplex/ui/ui-server
++.scratch/
++/.devenv/
++/.devenv.flake.nix
++/.direnv/
++/devenv.local.nix
+diff --git a/devenv.lock b/devenv.lock
+new file mode 100644
+index 000000000..a6f1bbd7d
+--- /dev/null
++++ b/devenv.lock
+@@ -0,0 +1,84 @@
++{
++  "nodes": {
++    "devenv": {
++      "locked": {
++        "dir": "src/modules",
++        "lastModified": 1790274448,
++        "narHash": "sha256-MCSbrGsgWXod/Qzk4v5tYO/fev1d5OcEGZ2vzVAvMfQ=",
++        "ref": "refs/tags/v2.4.0",
++        "rev": "b904dcb51fe48c30db250038241507f60752f222",
++        "shallow": true,
++        "type": "git",
++        "url": "https://github.com/cachix/devenv"
++      },
++      "original": {
++        "dir": "src/modules",
++        "ref": "refs/tags/v2.4.0",
++        "shallow": true,
++        "type": "git",
++        "url": "https://github.com/cachix/devenv"
++      }
++    },
++    "nixpkgs": {
++      "locked": {
++        "lastModified": 1788303326,
++        "narHash": "sha256-LHQFfZrRUk4QlxbKwBOhIbOO6MBlY6bIgHtrZX2iAvk=",
++        "ref": "refs/heads/master",
++        "rev": "6b9ce505e512688311fe820fc6493f39fe78dbc3",
++        "shallow": true,
++        "type": "git",
++        "url": "https://github.com/NixOS/nixpkgs"
++      },
++      "original": {
++        "rev": "6b9ce505e512688311fe820fc6493f39fe78dbc3",
++        "shallow": true,
++        "type": "git",
++        "url": "https://github.com/NixOS/nixpkgs"
++      }
++    },
++    "nixpkgs-shellcheck": {
++      "locked": {
++        "lastModified": 1720535198,
++        "narHash": "sha256-zwVvxrdIzralnSbcpghA92tWu2DV2lwv89xZc8MTrbg=",
++        "ref": "refs/heads/master",
++        "rev": "205fd4226592cc83fd4c0885a3e4c9c400efabb5",
++        "shallow": true,
++        "type": "git",
++        "url": "https://github.com/NixOS/nixpkgs"
++      },
++      "original": {
++        "rev": "205fd4226592cc83fd4c0885a3e4c9c400efabb5",
++        "shallow": true,
++        "type": "git",
++        "url": "https://github.com/NixOS/nixpkgs"
++      }
++    },
++    "nixpkgs-unstable": {
++      "locked": {
++        "lastModified": 1793876309,
++        "narHash": "sha256-Wojg9lIH/hDH91iDVH2/EPw8oDSpxjxhXONbU1yf4Zg=",
++        "ref": "refs/heads/master",
++        "rev": "f9a75f41be3a74eab55d3a7679d34ad6cc0da977",
++        "shallow": true,
++        "type": "git",
++        "url": "https://github.com/NixOS/nixpkgs"
++      },
++      "original": {
++        "rev": "f9a75f41be3a74eab55d3a7679d34ad6cc0da977",
++        "shallow": true,
++        "type": "git",
++        "url": "https://github.com/NixOS/nixpkgs"
++      }
++    },
++    "root": {
++      "inputs": {
++        "devenv": "devenv",
++        "nixpkgs": "nixpkgs",
++        "nixpkgs-shellcheck": "nixpkgs-shellcheck",
++        "nixpkgs-unstable": "nixpkgs-unstable"
++      }
++    }
++  },
++  "root": "root",
++  "version": 7
++}
+\ No newline at end of file
+diff --git a/devenv.nix b/devenv.nix
+new file mode 100644
+index 000000000..449fa161f
+--- /dev/null
++++ b/devenv.nix
+@@ -0,0 +1,36 @@
++# Copyright 2026 The Agent Substrate Authors
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++{ pkgs, inputs, ... }:
++let
++  shellcheckPkgs = import inputs.nixpkgs-shellcheck { system = pkgs.stdenv.hostPlatform.system; };
++  unstablePkgs = import inputs.nixpkgs-unstable { system = pkgs.stdenv.hostPlatform.system; };
++in
++{
++  packages =
++    assert pkgs.go_1_27.version == "1.27.0";
++    assert pkgs.golangci-lint.version == "2.13.2";
++    assert shellcheckPkgs.shellcheck.version == "0.9.0";
++    assert unstablePkgs.weaver.version == "0.25.1";
++    [
++      pkgs.go_1_27
++      pkgs.golangci-lint
++      pkgs.govulncheck
++      shellcheckPkgs.shellcheck
++      unstablePkgs.weaver
++      unstablePkgs.gitleaks
++      pkgs.gnumake
++      pkgs.git
++    ];
++}
+diff --git a/devenv.yaml b/devenv.yaml
+new file mode 100644
+index 000000000..a3b753fb2
+--- /dev/null
++++ b/devenv.yaml
+@@ -0,0 +1,23 @@
++# Copyright 2026 The Agent Substrate Authors
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++inputs:
++  nixpkgs:
++    url: git+https://github.com/NixOS/nixpkgs?rev=6b9ce505e512688311fe820fc6493f39fe78dbc3&shallow=1
++  nixpkgs-shellcheck:
++    url: git+https://github.com/NixOS/nixpkgs?rev=205fd4226592cc83fd4c0885a3e4c9c400efabb5&shallow=1
++  nixpkgs-unstable:
++    url: git+https://github.com/NixOS/nixpkgs?rev=f9a75f41be3a74eab55d3a7679d34ad6cc0da977&shallow=1
++  devenv:
++    url: git+https://github.com/cachix/devenv?dir=src/modules&ref=refs/tags/v2.4.0&shallow=1
+diff --git a/hack/util/verify-boilerplate.py b/hack/util/verify-boilerplate.py
+index 44fc5d9ff..e9283c2a0 100755
+--- a/hack/util/verify-boilerplate.py
++++ b/hack/util/verify-boilerplate.py
+@@ -108,7 +108,7 @@ def main():
+         # Skip non-source-code files
+         if ext in ['.md', '.txt', '.png', '.jpg', '.jpeg', '.gif', '.mp4', '.json', '.pdf', '.ico', '.woff', '.woff2', '.ttf', '.otf', '.svg']:
+             continue
+-        if filename in ['LICENSE', 'NOTICE', 'CODEOWNERS', 'CNAME', '.gitignore', 'go.mod', 'go.sum', 'Cargo.lock']:
++        if filename in ['LICENSE', 'NOTICE', 'CODEOWNERS', 'CNAME', '.gitignore', 'go.mod', 'go.sum', 'Cargo.lock', 'devenv.lock']:
+             continue
+ 
+         # exclude third_party files, which should have their OWN LICENSE
+-- 
+2.54.0
+

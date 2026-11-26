@@ -1,0 +1,912 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Zach Taylor <zctaylor.work@gmail.com>
+Date: Thu, 26 Nov 2026 17:25:45 -0500
+Subject: [PATCH 17/30] Match HTTPS egress rules on request path prefixes
+
+Two https rules for one host could not inject different credentials,
+because a rule was chosen on hostname and port alone. An https rule now
+takes path_prefixes. The rule with the longest matching prefix decides a
+request, and a rule with no prefixes covers every other path. The TLS
+connection is still allowed when any https rule covers its SNI and port,
+since no path exists yet.
+
+A prefix must start and end with "/", so "/zach/" cannot match
+"/zachary/x". Compile drops a prefix that does not, so the rule matches
+nothing instead of widening. Prefixes pick a credential and are not an
+authorization boundary.
+
+Paths are matched raw, up to the query. A path with a dot segment, an
+encoded dot, an encoded slash or a backslash is denied when a prefixed
+rule covers its name and port, so "/a/../b/" cannot take the catch-all
+rule's credential for what the origin reads as "/b/". Admission ties key
+on the prefix as well. Across protocols the tie check compares host and
+port only.
+
+Fork-Topic: egress-paths
+Fork-Upstream: candidate
+---
+ api/ateapi/v1/ateapi.pb.go                    |  34 ++++-
+ api/ateapi/v1/ateapi.proto                    |  21 +++
+ .../internal/apivalidation/egress_policy.go   |  95 ++++++++++---
+ .../apivalidation/egress_policy_test.go       |  98 ++++++++++++++
+ .../apivalidation/zz_generated.validation.go  |  46 +++++++
+ cmd/atenet/internal/router/egress/request.go  |   9 +-
+ .../internal/router/egress/request_test.go    |  86 +++++++++++-
+ docs/guides/egress-credential-injection.md    |  37 +++++
+ internal/egresspolicy/egresspolicy.go         |  85 +++++++++++-
+ internal/egresspolicy/egresspolicy_test.go    | 128 ++++++++++++++++++
+ 10 files changed, 608 insertions(+), 31 deletions(-)
+
+diff --git a/api/ateapi/v1/ateapi.pb.go b/api/ateapi/v1/ateapi.pb.go
+index d63c010fb..76255e1d8 100644
+--- a/api/ateapi/v1/ateapi.pb.go
++++ b/api/ateapi/v1/ateapi.pb.go
+@@ -1644,7 +1644,27 @@ type HttpsRule struct {
+ 	// deciding rule.
+ 	//
+ 	// +k8s:optional
+-	Effects       *HttpRuleEffects `protobuf:"bytes,3,opt,name=effects,proto3" json:"effects,omitempty"`
++	Effects *HttpRuleEffects `protobuf:"bytes,3,opt,name=effects,proto3" json:"effects,omitempty"`
++	// Request paths the rule applies to. A request matches when its path, up to
++	// any "?", starts with one of the prefixes; no escape is decoded, and the
++	// match is case-sensitive. Empty means all paths. Each prefix must start and
++	// end with "/". Among rules that match the name and port, the rule with the
++	// longest matching prefix decides, and a rule with no prefixes decides only
++	// when no prefixed rule matches. A request whose path has a "." or ".."
++	// segment, an encoded dot ("%2e"), an encoded slash ("%2f"), "%5c" or a
++	// backslash is denied when some prefixed rule matches its name and port. Two
++	// rules for the same name and port may not share a prefix. The TLS
++	// connection is allowed when any rule for its name and port is. Prefixes
++	// select which credential is sent; they are not an authorization boundary,
++	// so the rule with no prefixes must not hold a credential broader than a
++	// scoped one.
++	//
++	// +k8s:optional
++	// +k8s:maxItems=16
++	// +k8s:listType=set
++	// +k8s:eachVal=+k8s:maxLength=1024
++	// +k8s:customValidation # format
++	PathPrefixes  []string `protobuf:"bytes,4,rep,name=path_prefixes,json=pathPrefixes,proto3" json:"path_prefixes,omitempty"`
+ 	unknownFields protoimpl.UnknownFields
+ 	sizeCache     protoimpl.SizeCache
+ }
+@@ -1700,6 +1720,13 @@ func (x *HttpsRule) GetEffects() *HttpRuleEffects {
+ 	return nil
+ }
+ 
++func (x *HttpsRule) GetPathPrefixes() []string {
++	if x != nil {
++		return x.PathPrefixes
++	}
++	return nil
++}
++
+ // TlsPassthroughRule allows TLS that the gateway forwards without decryption.
+ // It is evaluated once per connection at the ClientHello, on the SNI and
+ // port, for any protocol carried over TLS. A connection that sends no SNI
+@@ -10066,11 +10093,12 @@ const file_api_ateapi_v1_ateapi_proto_rawDesc = "" +
+ 	"\bHttpRule\x12\x1c\n" +
+ 	"\thostnames\x18\x01 \x03(\tR\thostnames\x120\n" +
+ 	"\x05ports\x18\x02 \x01(\v2\x1a.substrate.ateapi.v1.PortsR\x05ports\x12>\n" +
+-	"\aeffects\x18\x03 \x01(\v2$.substrate.ateapi.v1.HttpRuleEffectsR\aeffects\"\x9b\x01\n" +
++	"\aeffects\x18\x03 \x01(\v2$.substrate.ateapi.v1.HttpRuleEffectsR\aeffects\"\xc0\x01\n" +
+ 	"\tHttpsRule\x12\x1c\n" +
+ 	"\thostnames\x18\x01 \x03(\tR\thostnames\x120\n" +
+ 	"\x05ports\x18\x02 \x01(\v2\x1a.substrate.ateapi.v1.PortsR\x05ports\x12>\n" +
+-	"\aeffects\x18\x03 \x01(\v2$.substrate.ateapi.v1.HttpRuleEffectsR\aeffects\"d\n" +
++	"\aeffects\x18\x03 \x01(\v2$.substrate.ateapi.v1.HttpRuleEffectsR\aeffects\x12#\n" +
++	"\rpath_prefixes\x18\x04 \x03(\tR\fpathPrefixes\"d\n" +
+ 	"\x12TlsPassthroughRule\x12\x1c\n" +
+ 	"\thostnames\x18\x01 \x03(\tR\thostnames\x120\n" +
+ 	"\x05ports\x18\x02 \x01(\v2\x1a.substrate.ateapi.v1.PortsR\x05ports\"R\n" +
+diff --git a/api/ateapi/v1/ateapi.proto b/api/ateapi/v1/ateapi.proto
+index 51ed7d1e3..c2b789d78 100644
+--- a/api/ateapi/v1/ateapi.proto
++++ b/api/ateapi/v1/ateapi.proto
+@@ -742,6 +742,27 @@ message HttpsRule {
+   //
+   // +k8s:optional
+   HttpRuleEffects effects = 3;
++
++  // Request paths the rule applies to. A request matches when its path, up to
++  // any "?", starts with one of the prefixes; no escape is decoded, and the
++  // match is case-sensitive. Empty means all paths. Each prefix must start and
++  // end with "/". Among rules that match the name and port, the rule with the
++  // longest matching prefix decides, and a rule with no prefixes decides only
++  // when no prefixed rule matches. A request whose path has a "." or ".."
++  // segment, an encoded dot ("%2e"), an encoded slash ("%2f"), "%5c" or a
++  // backslash is denied when some prefixed rule matches its name and port. Two
++  // rules for the same name and port may not share a prefix. The TLS
++  // connection is allowed when any rule for its name and port is. Prefixes
++  // select which credential is sent; they are not an authorization boundary,
++  // so the rule with no prefixes must not hold a credential broader than a
++  // scoped one.
++  //
++  // +k8s:optional
++  // +k8s:maxItems=16
++  // +k8s:listType=set
++  // +k8s:eachVal=+k8s:maxLength=1024
++  // +k8s:customValidation # format
++  repeated string path_prefixes = 4;
+ }
+ 
+ // TlsPassthroughRule allows TLS that the gateway forwards without decryption.
+diff --git a/cmd/ateapi/internal/apivalidation/egress_policy.go b/cmd/ateapi/internal/apivalidation/egress_policy.go
+index 4e8c8883f..14fd0b3d9 100644
+--- a/cmd/ateapi/internal/apivalidation/egress_policy.go
++++ b/cmd/ateapi/internal/apivalidation/egress_policy.go
+@@ -91,34 +91,67 @@ func ValidateCustom_DeleteActorEgressPolicyRequest_Name(_ context.Context, _ ope
+ 
+ // ValidateCustom_EgressPolicy_Rules rejects two rules that tie on a pattern
+ // and a port, whatever their protocols: the gateway would have no way to pick
+-// one. Defaults are applied before validation, so an http rule left on 80
+-// and an https rule left on 443 never tie.
++// one. Two https rules tie only when they also share a path prefix, and a rule
++// with no path prefixes holds the empty prefix, so it ties with another such
++// rule but not with a prefixed one. An http or tls_passthrough rule has no
++// path, so it ties with any other-protocol rule on the pattern and port.
++// Defaults are applied before validation, so an http rule left on 80 and an
++// https rule left on 443 never tie.
+ func ValidateCustom_EgressPolicy_Rules(_ context.Context, _ operation.Operation, p *field.Path, rules, _ []*ateapi.EgressRule) field.ErrorList {
+-	type key struct {
++	type hostKey struct {
+ 		pattern string
+ 		port    portKey
+ 	}
++	type key struct {
++		hostKey
++		prefix string
++	}
+ 	type match struct {
+ 		rule int
+ 		path *field.Path
+ 	}
+ 	var errs field.ErrorList
+-	seen := map[key]match{}
++	httpsSeen := map[key]match{}     // https rules, by prefix
++	httpsHost := map[hostKey]match{} // first https rule, whatever its prefix
++	otherHost := map[hostKey]match{} // first http or tls_passthrough rule
++	tie := func(path *field.Path, pattern string, prior match, port portKey, prefix string) *field.Error {
++		return field.Invalid(path, pattern, fmt.Sprintf("ties with %s on %s%s", prior.path, port, prefixSuffix(prefix)))
++	}
+ 	for i, rule := range rules {
+-		member, patterns, ports := ruleMatchFields(rule)
++		member, patterns, ports, prefixes := ruleMatchFields(rule)
+ 		if member == "" {
+ 			continue // handled by the union check
+ 		}
+ 		for j, pattern := range patterns {
+ 			path := p.Index(i).Child(member, "hostnames").Index(j)
+ 			for _, port := range portKeysOf(ports) {
+-				k := key{pattern, port}
+-				prior, ok := seen[k]
+-				switch {
+-				case !ok:
+-					seen[k] = match{rule: i, path: path}
+-				case prior.rule != i: // a repeat within one rule is reported by the set check
+-					errs = append(errs, field.Invalid(path, pattern, fmt.Sprintf("ties with %s on %s", prior.path, port)))
++				hk := hostKey{pattern, port}
++				cur := match{rule: i, path: path}
++				// A repeat within one rule is reported by the set check.
++				if member != "https" {
++					if prior, ok := httpsHost[hk]; ok && prior.rule != i {
++						errs = append(errs, tie(path, pattern, prior, port, ""))
++					}
++					if prior, ok := otherHost[hk]; !ok {
++						otherHost[hk] = cur
++					} else if prior.rule != i {
++						errs = append(errs, tie(path, pattern, prior, port, ""))
++					}
++					continue
++				}
++				if prior, ok := otherHost[hk]; ok && prior.rule != i {
++					errs = append(errs, tie(path, pattern, prior, port, ""))
++				}
++				if _, ok := httpsHost[hk]; !ok {
++					httpsHost[hk] = cur
++				}
++				for _, prefix := range prefixes {
++					k := key{hk, prefix}
++					if prior, ok := httpsSeen[k]; !ok {
++						httpsSeen[k] = cur
++					} else if prior.rule != i {
++						errs = append(errs, tie(path, pattern, prior, port, prefix))
++					}
+ 				}
+ 			}
+ 		}
+@@ -131,17 +164,30 @@ func ValidateCustom_EgressPolicyTemplate_Rules(ctx context.Context, op operation
+ }
+ 
+ // ruleMatchFields is what a rule matches on: the union member, its hostnames,
+-// and its ports. Everything is empty for a rule that sets no member.
+-func ruleMatchFields(rule *ateapi.EgressRule) (member string, hostnames []string, ports *ateapi.Ports) {
++// its ports, and its path prefixes, which are [""] for a rule that matches
++// every path. Everything is empty for a rule that sets no member.
++func ruleMatchFields(rule *ateapi.EgressRule) (member string, hostnames []string, ports *ateapi.Ports, prefixes []string) {
++	allPaths := []string{""}
+ 	switch {
+ 	case rule.GetHttp() != nil:
+-		return "http", rule.GetHttp().GetHostnames(), rule.GetHttp().GetPorts()
++		return "http", rule.GetHttp().GetHostnames(), rule.GetHttp().GetPorts(), allPaths
+ 	case rule.GetHttps() != nil:
+-		return "https", rule.GetHttps().GetHostnames(), rule.GetHttps().GetPorts()
++		prefixes = rule.GetHttps().GetPathPrefixes()
++		if len(prefixes) == 0 {
++			prefixes = allPaths
++		}
++		return "https", rule.GetHttps().GetHostnames(), rule.GetHttps().GetPorts(), prefixes
+ 	case rule.GetTlsPassthrough() != nil:
+-		return "tls_passthrough", rule.GetTlsPassthrough().GetHostnames(), rule.GetTlsPassthrough().GetPorts()
++		return "tls_passthrough", rule.GetTlsPassthrough().GetHostnames(), rule.GetTlsPassthrough().GetPorts(), allPaths
+ 	}
+-	return "", nil, nil
++	return "", nil, nil, nil
++}
++
++func prefixSuffix(prefix string) string {
++	if prefix == "" {
++		return ""
++	}
++	return fmt.Sprintf(" for path prefix %q", prefix)
+ }
+ 
+ // portKey is one thing a Ports matches: a port number, or every port. Its
+@@ -177,6 +223,19 @@ func ValidateCustom_HttpsRule_Hostnames(_ context.Context, _ operation.Operation
+ 	return validateHostnamePatterns(patterns, p)
+ }
+ 
++// Each prefix is matched against the path before any "?", so it must be an
++// absolute path with no query or fragment. It ends with "/" so that "/zach/"
++// cannot match "/zachary/x".
++func ValidateCustom_HttpsRule_PathPrefixes(_ context.Context, _ operation.Operation, p *field.Path, prefixes, _ []string) field.ErrorList {
++	var errs field.ErrorList
++	for i, prefix := range prefixes {
++		if !strings.HasPrefix(prefix, "/") || !strings.HasSuffix(prefix, "/") || strings.ContainsAny(prefix, "?#") {
++			errs = append(errs, field.Invalid(p.Index(i), prefix, `must start and end with "/" and contain no "?" or "#"`))
++		}
++	}
++	return errs
++}
++
+ func ValidateCustom_TlsPassthroughRule_Hostnames(_ context.Context, _ operation.Operation, p *field.Path, patterns, _ []string) field.ErrorList {
+ 	return validateHostnamePatterns(patterns, p)
+ }
+diff --git a/cmd/ateapi/internal/apivalidation/egress_policy_test.go b/cmd/ateapi/internal/apivalidation/egress_policy_test.go
+index 07457b4cc..19768881f 100644
+--- a/cmd/ateapi/internal/apivalidation/egress_policy_test.go
++++ b/cmd/ateapi/internal/apivalidation/egress_policy_test.go
+@@ -449,6 +449,9 @@ func TestValidateEgressPolicyRules(t *testing.T) {
+ 	httpsRule := func(ports *ateapi.Ports, patterns ...string) *ateapi.EgressRule {
+ 		return &ateapi.EgressRule{Https: &ateapi.HttpsRule{Hostnames: patterns, Ports: ports}}
+ 	}
++	scopedHttpsRule := func(host string, prefixes ...string) *ateapi.EgressRule {
++		return &ateapi.EgressRule{Https: &ateapi.HttpsRule{Hostnames: []string{host}, PathPrefixes: prefixes}}
++	}
+ 	passthroughRule := func(ports *ateapi.Ports, patterns ...string) *ateapi.EgressRule {
+ 		return &ateapi.EgressRule{TlsPassthrough: &ateapi.TlsPassthroughRule{Hostnames: patterns, Ports: ports}}
+ 	}
+@@ -785,6 +788,101 @@ func TestValidateEgressPolicyRules(t *testing.T) {
+ 		want: field.ErrorList{
+ 			field.Invalid(rules.Index(2).Child("tls_passthrough", "hostnames").Index(0), "*.example.com", `ties with egress_policy.rules[1].https.hostnames[0] on port 443`),
+ 		},
++	}, {
++		name: "https rules with disjoint path prefixes do not tie",
++		mutate: func(p *ateapi.EgressPolicy) {
++			p.Rules = []*ateapi.EgressRule{scopedHttpsRule("github.com", "/a/", "/b/"), scopedHttpsRule("github.com", "/c/")}
++		},
++	}, {
++		name: "a prefixed https rule and a catch-all do not tie",
++		mutate: func(p *ateapi.EgressPolicy) {
++			p.Rules = []*ateapi.EgressRule{scopedHttpsRule("github.com", "/a/"), scopedHttpsRule("github.com")}
++		},
++	}, {
++		name: "https rules sharing a path prefix tie",
++		mutate: func(p *ateapi.EgressPolicy) {
++			p.Rules = []*ateapi.EgressRule{scopedHttpsRule("github.com", "/a/"), scopedHttpsRule("github.com", "/b/", "/a/")}
++		},
++		want: field.ErrorList{
++			field.Invalid(rules.Index(1).Child("https", "hostnames").Index(0), "github.com", `ties with egress_policy.rules[0].https.hostnames[0] on port 443 for path prefix "/a/"`),
++		},
++	}, {
++		name: "two catch-all https rules tie",
++		mutate: func(p *ateapi.EgressPolicy) {
++			p.Rules = []*ateapi.EgressRule{scopedHttpsRule("github.com"), scopedHttpsRule("github.com")}
++		},
++		want: field.ErrorList{
++			field.Invalid(rules.Index(1).Child("https", "hostnames").Index(0), "github.com", `ties with egress_policy.rules[0].https.hostnames[0] on port 443`),
++		},
++	}, {
++		name: "path prefix without a leading slash",
++		mutate: func(p *ateapi.EgressPolicy) {
++			p.Rules = []*ateapi.EgressRule{scopedHttpsRule("github.com", "a/")}
++		},
++		want: field.ErrorList{
++			field.Invalid(rules.Index(0).Child("https", "path_prefixes").Index(0), "a/", `must start and end with "/" and contain no "?" or "#"`),
++		},
++	}, {
++		name: "path prefix without a trailing slash",
++		mutate: func(p *ateapi.EgressPolicy) {
++			p.Rules = []*ateapi.EgressRule{scopedHttpsRule("github.com", "/zach")}
++		},
++		want: field.ErrorList{
++			field.Invalid(rules.Index(0).Child("https", "path_prefixes").Index(0), "/zach", `must start and end with "/" and contain no "?" or "#"`),
++		},
++	}, {
++		name: "a prefixed https rule and tls passthrough on the same host and port tie",
++		mutate: func(p *ateapi.EgressPolicy) {
++			p.Rules = []*ateapi.EgressRule{passthroughRule(portNumbers(443), "github.com"), scopedHttpsRule("github.com", "/a/")}
++		},
++		want: field.ErrorList{
++			field.Invalid(rules.Index(1).Child("https", "hostnames").Index(0), "github.com", `ties with egress_policy.rules[0].tls_passthrough.hostnames[0] on port 443`),
++		},
++	}, {
++		name: "path prefix with a query",
++		mutate: func(p *ateapi.EgressPolicy) {
++			p.Rules = []*ateapi.EgressRule{scopedHttpsRule("github.com", "/a?x=1")}
++		},
++		want: field.ErrorList{
++			field.Invalid(rules.Index(0).Child("https", "path_prefixes").Index(0), "/a?x=1", `must start and end with "/" and contain no "?" or "#"`),
++		},
++	}, {
++		name: "path prefix with a fragment",
++		mutate: func(p *ateapi.EgressPolicy) {
++			p.Rules = []*ateapi.EgressRule{scopedHttpsRule("github.com", "/a#x")}
++		},
++		want: field.ErrorList{
++			field.Invalid(rules.Index(0).Child("https", "path_prefixes").Index(0), "/a#x", `must start and end with "/" and contain no "?" or "#"`),
++		},
++	}, {
++		name: "too many path prefixes",
++		mutate: func(p *ateapi.EgressPolicy) {
++			var many []string
++			for i := range 17 {
++				many = append(many, fmt.Sprintf("/p%d/", i))
++			}
++			p.Rules = []*ateapi.EgressRule{scopedHttpsRule("github.com", many...)}
++		},
++		want: field.ErrorList{
++			field.TooMany(rules.Index(0).Child("https", "path_prefixes"), 17, 16).WithOrigin("maxItems"),
++		},
++	}, {
++		name: "path prefix too long",
++		mutate: func(p *ateapi.EgressPolicy) {
++			long := "/" + strings.Repeat("a", 1023) + "/"
++			p.Rules = []*ateapi.EgressRule{scopedHttpsRule("github.com", long)}
++		},
++		want: field.ErrorList{
++			field.TooLong(rules.Index(0).Child("https", "path_prefixes").Index(0), "", 1024).WithOrigin("maxLength"),
++		},
++	}, {
++		name: "duplicate path prefix",
++		mutate: func(p *ateapi.EgressPolicy) {
++			p.Rules = []*ateapi.EgressRule{scopedHttpsRule("github.com", "/a/", "/a/")}
++		},
++		want: field.ErrorList{
++			field.Duplicate(rules.Index(0).Child("https", "path_prefixes").Index(1), "/a/"),
++		},
+ 	}, {
+ 		name: "missing static header",
+ 		mutate: func(p *ateapi.EgressPolicy) {
+diff --git a/cmd/ateapi/internal/apivalidation/zz_generated.validation.go b/cmd/ateapi/internal/apivalidation/zz_generated.validation.go
+index 4719d8d4f..6d462c40c 100644
+--- a/cmd/ateapi/internal/apivalidation/zz_generated.validation.go
++++ b/cmd/ateapi/internal/apivalidation/zz_generated.validation.go
+@@ -5264,6 +5264,52 @@ func Validate_HttpsRule(
+ 		errs = append(errs, fn(fldPath.Child("effects"), obj.Effects, oldVal, oldObj != nil)...)
+ 	}
+ 
++	{ // field v1.HttpsRule.PathPrefixes
++		fn := func(
++			fldPath *field.Path,
++			obj, oldObj []string,
++			oldValueCorrelated bool) (errs field.ErrorList) {
++			// don't revalidate unchanged data
++			if oldValueCorrelated && op.Type == operation.Update {
++				if ateDeepEqual(obj, oldObj) {
++					return nil
++				}
++			}
++			// call field-attached validations
++			earlyReturn := false
++			if e := validate.MaxItems(ctx, op, fldPath, obj, oldObj, 16).MarkShortCircuit(); len(e) != 0 {
++				errs = append(errs, e...)
++				earlyReturn = true
++			}
++			if e := validate.OptionalSlice(ctx, op, fldPath, obj, oldObj).MarkShortCircuit(); len(e) != 0 {
++				earlyReturn = true
++			}
++			if earlyReturn {
++				return // do not proceed
++			}
++			// custom validation
++			if e := ValidateCustom_HttpsRule_PathPrefixes(ctx, op, fldPath, obj, oldObj); len(e) != 0 {
++				errs = append(errs, e...)
++			}
++			if e := validate.EachValSliceVal(ctx, op, fldPath, obj, oldObj, validate.DirectEqual, nil,
++				func(ctx context.Context, op operation.Operation, fldPath *field.Path, obj, oldObj *string) field.ErrorList {
++					return validate.MaxLength(ctx, op, fldPath, obj, oldObj, 1024)
++				}); len(e) != 0 {
++				errs = append(errs, e...)
++			}
++			// lists with set semantics require unique values
++			if e := validate.ValSliceUnique(ctx, op, fldPath, obj, oldObj, validate.DirectEqual); len(e) != 0 {
++				errs = append(errs, e...)
++			}
++			return
++		}
++		oldVal := safe.Field(oldObj,
++			func(oldObj *v1.HttpsRule) []string {
++				return oldObj.PathPrefixes
++			})
++		errs = append(errs, fn(fldPath.Child("path_prefixes"), obj.PathPrefixes, oldVal, oldObj != nil)...)
++	}
++
+ 	return errs
+ }
+ 
+diff --git a/cmd/atenet/internal/router/egress/request.go b/cmd/atenet/internal/router/egress/request.go
+index 308f8acce..5f597c52f 100644
+--- a/cmd/atenet/internal/router/egress/request.go
++++ b/cmd/atenet/internal/router/egress/request.go
+@@ -41,9 +41,10 @@ const (
+ //
+ // The request is decided on the Host it named and the port the actor dialed,
+ // by the http rules on the cleartext leg and the https rules on the MITM leg,
+-// where the connection's SNI must fall under an https rule too. An allowed
+-// request is dialed by the name it was decided on, on the port the actor
+-// dialed.
++// where the connection's SNI must fall under an https rule too. On the MITM
++// leg the request path also picks among https rules that name path prefixes.
++// An allowed request is dialed by the name it was decided on, on the port the
++// actor dialed.
+ func (h *Handler) handleRequest(ctx context.Context, md *extproc.RequestMetadata, leg string) (extproc.Result, error) {
+ 	if isWebSocketUpgrade(md) {
+ 		slog.WarnContext(ctx, "egress denied: WebSocket upgrades are not supported", slog.String("leg", leg), slog.String("host", md.Host))
+@@ -188,7 +189,7 @@ func requestDestination(md *extproc.RequestMetadata) (egresspolicy.Destination,
+ 			return egresspolicy.Destination{}, fmt.Errorf("request :authority %q and Host %q name different destinations", authority, host)
+ 		}
+ 	}
+-	dest := egresspolicy.Destination{Hostname: named.Hostname, IP: named.IP}
++	dest := egresspolicy.Destination{Hostname: named.Hostname, IP: named.IP, Path: md.Path, HasPath: true}
+ 	if raw := md.Attribute(extproc.ConnectAuthorityFilterStateAttribute); raw != "" {
+ 		dialed, err := egresspolicy.NormalizeAuthority(raw)
+ 		if err != nil || !dialed.IP.IsValid() || dialed.Port == 0 {
+diff --git a/cmd/atenet/internal/router/egress/request_test.go b/cmd/atenet/internal/router/egress/request_test.go
+index 49ceb6d60..95596774d 100644
+--- a/cmd/atenet/internal/router/egress/request_test.go
++++ b/cmd/atenet/internal/router/egress/request_test.go
+@@ -78,6 +78,11 @@ const testSNI = "api.example.com"
+ // with testSNI on the MITM leg. attrs overrides the defaults; an empty value
+ // deletes one.
+ func innerMetadata(leg, method, authority string, attrs map[string]string) *extproc.RequestMetadata {
++	return innerMetadataAt(leg, method, authority, "/v1/things?secret=1", attrs)
++}
++
++// innerMetadataAt is innerMetadata for a request to path.
++func innerMetadataAt(leg, method, authority, path string, attrs map[string]string) *extproc.RequestMetadata {
+ 	fields := map[string]string{
+ 		extproc.FilterChainNameAttribute:             leg,
+ 		extproc.ActorIdentityFilterStateAttribute:    testActorSPIFFEID,
+@@ -100,7 +105,7 @@ func innerMetadata(leg, method, authority string, attrs map[string]string) *extp
+ 	return extproc.NewRequestMetadata([]*corev3.HeaderValue{
+ 		{Key: ":method", RawValue: []byte(method)},
+ 		{Key: ":authority", RawValue: []byte(authority)},
+-		{Key: ":path", RawValue: []byte("/v1/things?secret=1")},
++		{Key: ":path", RawValue: []byte(path)},
+ 	}, map[string]*structpb.Struct{"envoy.filters.http.ext_proc": {Fields: values}})
+ }
+ 
+@@ -522,3 +527,82 @@ func TestCanceledCallerIsNotAPolicyFailure(t *testing.T) {
+ 	close(client.policyGate)
+ 	wantStatus(t, err, envoy_type.StatusCode_RequestTimeout)
+ }
++
++// Two https rules for one host pick their credential by request path, and a
++// path no rule covers, or one a server could read differently, is denied.
++func TestMITMLegPicksCredentialByPath(t *testing.T) {
++	rule := func(uri string, prefixes ...string) *ateapi.EgressRule {
++		return &ateapi.EgressRule{Https: &ateapi.HttpsRule{
++			Hostnames:    []string{"api.example.com"},
++			PathPrefixes: prefixes,
++			Effects: &ateapi.HttpRuleEffects{ReplaceHeaders: []*ateapi.CredentialHeader{{
++				Header: "authorization", Prefix: "Basic ", CredentialUri: uri,
++			}}},
++		}}
++	}
++	scoped := rule("ate-secret://k8s/default/scoped", "/zach-source/")
++	catchAll := rule("ate-secret://k8s/default/catchall")
++	tests := []struct {
++		name    string
++		rules   []*ateapi.EgressRule
++		path    string
++		wantURI string // empty means denied
++	}{
++		{"scoped path gets the scoped credential", []*ateapi.EgressRule{catchAll, scoped}, "/zach-source/claude-factory.git/info/refs?service=git-receive-pack", "ate-secret://k8s/default/scoped"},
++		{"other path gets the catch-all", []*ateapi.EgressRule{scoped, catchAll}, "/stigenai/substrate.git/info/refs?service=git-receive-pack", "ate-secret://k8s/default/catchall"},
++		{"dot-dot cannot pick the catch-all", []*ateapi.EgressRule{scoped, catchAll}, "/stigenai/../zach-source/x.git/info/refs", ""},
++		{"encoded slash is denied", []*ateapi.EgressRule{scoped, catchAll}, "/stigenai%2f..%2fzach-source/x", ""},
++		{"only scoped rules deny other paths", []*ateapi.EgressRule{scoped}, "/stigenai/x", ""},
++		{"only scoped rules allow the connection and the scoped path", []*ateapi.EgressRule{scoped}, "/zach-source/x", "ate-secret://k8s/default/scoped"},
++	}
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			provider := &fakeProvider{resp: bearerTokenResponse("tok")}
++			h := injectionHandlerFor(&ateapi.EgressPolicy{Rules: tc.rules}, provider, injectionProviderName)
++			md := withAuthorization(innerMetadataAt(extproc.EgressTLSMITMFilterChainName, "GET", "api.example.com", tc.path, nil))
++			res, err := h.HandleRequestHeaders(context.Background(), md)
++			if tc.wantURI == "" {
++				wantStatus(t, err, envoy_type.StatusCode_Forbidden)
++				if provider.got != nil {
++					t.Errorf("provider asked for %q on a denied request", provider.got.GetUri())
++				}
++				return
++			}
++			wantAllowed(t, res, err)
++			if got := provider.got.GetUri(); got != tc.wantURI {
++				t.Errorf("credential URI = %q, want %q", got, tc.wantURI)
++			}
++		})
++	}
++}
++
++// A wildcard host with path prefixes picks its credential by path like an
++// exact host does.
++func TestMITMLegPicksCredentialByPathUnderWildcardHost(t *testing.T) {
++	rule := func(uri string, prefixes ...string) *ateapi.EgressRule {
++		return &ateapi.EgressRule{Https: &ateapi.HttpsRule{
++			Hostnames:    []string{"*.example.com"},
++			PathPrefixes: prefixes,
++			Effects: &ateapi.HttpRuleEffects{ReplaceHeaders: []*ateapi.CredentialHeader{{
++				Header: "authorization", Prefix: "Basic ", CredentialUri: uri,
++			}}},
++		}}
++	}
++	rules := []*ateapi.EgressRule{rule("ate-secret://k8s/default/catchall"), rule("ate-secret://k8s/default/scoped", "/zach-source/")}
++	for path, wantURI := range map[string]string{
++		"/zach-source/x.git/info/refs": "ate-secret://k8s/default/scoped",
++		"/zach-sourcery/x":             "ate-secret://k8s/default/catchall",
++		"/stigenai/x":                  "ate-secret://k8s/default/catchall",
++	} {
++		t.Run(path, func(t *testing.T) {
++			provider := &fakeProvider{resp: bearerTokenResponse("tok")}
++			h := injectionHandlerFor(&ateapi.EgressPolicy{Rules: rules}, provider, injectionProviderName)
++			md := withAuthorization(innerMetadataAt(extproc.EgressTLSMITMFilterChainName, "GET", "api.example.com", path, nil))
++			res, err := h.HandleRequestHeaders(context.Background(), md)
++			wantAllowed(t, res, err)
++			if got := provider.got.GetUri(); got != wantURI {
++				t.Errorf("credential URI = %q, want %q", got, wantURI)
++			}
++		})
++	}
++}
+diff --git a/docs/guides/egress-credential-injection.md b/docs/guides/egress-credential-injection.md
+index ce0f89042..2730595fd 100644
+--- a/docs/guides/egress-credential-injection.md
++++ b/docs/guides/egress-credential-injection.md
+@@ -168,6 +168,43 @@ third of its lifetime is left, so the upstream always gets a token with at
+ least that much time remaining: 300 seconds for the 900-second lifetime above.
+ Concurrent requests that need the same token share one mint.
+ 
++### Different credentials by path
++
++An `https` rule can name `pathPrefixes`, so two rules for one host inject
++different credentials. The rule with no prefixes decides every other path:
++
++```yaml
++rules:
++- https:
++    hostnames: ["github.com"]
++    pathPrefixes: ["/zach-source/"]
++    effects:
++      replaceHeaders:
++      - header: Authorization
++        prefix: "Basic "
++        credentialUri: ate-secret://k8s.io/default/ns1/github/zs-basic
++- https:
++    hostnames: ["github.com"]
++    effects:
++      replaceHeaders:
++      - header: Authorization
++        prefix: "Basic "
++        credentialUri: ate-secret://k8s.io/default/ns1/github/basic
++```
++
++Each prefix must start and end with `/`. A request matches a prefix when its
++path, before any `?`, starts with it. No escape is decoded, and the match is
++case sensitive. The longest matching prefix decides. A request whose path
++has a `.` or `..` segment, an encoded dot, an encoded slash or a backslash is
++denied when a rule with prefixes covers its host and port, because the origin
++could read it as a different path. Rules for one host and port must not share
++a prefix. The TLS connection is allowed when any `https` rule covers its
++server name, so a path that no rule covers is denied per request.
++
++Path prefixes select which credential is sent. They are not an authorization
++boundary: the rule with no prefixes must not hold a credential broader than a
++scoped one.
++
+ ## What the gateway does
+ 
+ | Situation | Outcome |
+diff --git a/internal/egresspolicy/egresspolicy.go b/internal/egresspolicy/egresspolicy.go
+index 8f1d7cfdb..9a5c178f6 100644
+--- a/internal/egresspolicy/egresspolicy.go
++++ b/internal/egresspolicy/egresspolicy.go
+@@ -50,6 +50,13 @@ type Destination struct {
+ 	// does not, in which case a rule's ports are not enforced. A port in a
+ 	// request's authority is not this.
+ 	Port uint16
++	// Path is the request path, with any query, when HasPath. Only https rules
++	// with path prefixes look at it.
++	Path string
++	// HasPath reports that Path is known. It is false for a decision made
++	// before any request exists, such as the one on a TLS connection's SNI,
++	// where a rule with path prefixes matches whatever its prefixes are.
++	HasPath bool
+ }
+ 
+ // Decision is the outcome of evaluating a policy against a Destination.
+@@ -84,7 +91,12 @@ type compiledRule struct {
+ 	// ports the rule names; anyPort when it names all of them.
+ 	ports   []uint16
+ 	anyPort bool
+-	effects *ateapi.HttpRuleEffects
++	// pathScoped is set when the rule names path prefixes, even if none
++	// survived Compile, so a dropped prefix can never widen the rule to all
++	// paths.
++	pathScoped   bool
++	pathPrefixes []string
++	effects      *ateapi.HttpRuleEffects
+ }
+ 
+ // Ports read for an http or https rule that names none. ateapi fills these
+@@ -119,6 +131,14 @@ func Compile(policy *ateapi.EgressPolicy) (*Policy, []error) {
+ 			cr.protocol, cr.effects = protocolHTTPS, rule.GetHttps().GetEffects()
+ 			member = "https"
+ 			raw, ports, defaultPort = rule.GetHttps().GetHostnames(), rule.GetHttps().GetPorts(), defaultHTTPSPort
++			cr.pathScoped = len(rule.GetHttps().GetPathPrefixes()) > 0
++			for _, prefix := range rule.GetHttps().GetPathPrefixes() {
++				if !strings.HasPrefix(prefix, "/") || !strings.HasSuffix(prefix, "/") {
++					errs = append(errs, fmt.Errorf("rules[%d].https.path_prefixes: %q does not start and end with \"/\"", i, prefix))
++					continue
++				}
++				cr.pathPrefixes = append(cr.pathPrefixes, prefix)
++			}
+ 		case rule.GetTlsPassthrough() != nil:
+ 			cr.protocol = protocolTLSPassthrough
+ 			member = "tls_passthrough"
+@@ -244,6 +264,12 @@ func (p *Policy) SNIRules(port uint16) []SNIRule {
+ // address in its authority and the port the actor dialed. decrypted selects
+ // the https rules, for a request the gateway terminated TLS for; otherwise
+ // the http rules apply. A tls_passthrough rule never decides a request.
++//
++// When dest.HasPath, an https rule with path prefixes decides only a request
++// whose path starts with one of them, and the longest matching prefix wins
++// over a shorter one and over a rule with no prefixes. A path that a server
++// could resolve to a different one is denied if any such rule matches the
++// name and port; see unsafePath.
+ func (p *Policy) EvaluateRequest(dest Destination, decrypted bool) Decision {
+ 	want := protocolHTTP
+ 	if decrypted {
+@@ -258,7 +284,14 @@ func (p *Policy) EvaluateRequest(dest Destination, decrypted bool) Decision {
+ 		if !ok {
+ 			continue
+ 		}
+-		rank := matchRank{name: name, port: rule.portRank()}
++		if rule.pathScoped && dest.HasPath && unsafePath(dest.Path) {
++			return Decision{RuleIndex: -1}
++		}
++		pathRank, ok := rule.matchPath(dest)
++		if !ok {
++			continue
++		}
++		rank := matchRank{name: name, port: rule.portRank(), path: pathRank}
+ 		if best.RuleIndex == -1 || rank.beats(bestRank) {
+ 			best, bestRank = Decision{Allowed: true, RuleIndex: i, Effects: rule.effects}, rank
+ 		}
+@@ -266,6 +299,44 @@ func (p *Policy) EvaluateRequest(dest Destination, decrypted bool) Decision {
+ 	return best
+ }
+ 
++// matchPath reports whether the rule applies to dest's path, and the path
++// rank: 0 for a rule with no prefixes, and the negated length of the longest
++// matching prefix otherwise, so a longer prefix is more specific. It matches
++// the raw path up to "?", with no decoding.
++func (r compiledRule) matchPath(dest Destination) (int, bool) {
++	if !r.pathScoped || !dest.HasPath {
++		return 0, true
++	}
++	path, _, _ := strings.Cut(dest.Path, "?")
++	best, found := 0, false
++	for _, prefix := range r.pathPrefixes {
++		if strings.HasPrefix(path, prefix) && len(prefix) > -best {
++			best, found = -len(prefix), true
++		}
++	}
++	return best, found
++}
++
++// unsafePath reports whether a server might resolve path to a different one
++// than the raw text a prefix is matched against: a "." or ".." segment, an
++// encoded dot or slash, or a backslash. Without this, "/other/../scoped/x"
++// would match a catch-all rule and carry its credential to a path that the
++// server reads as scoped. Such a path is denied rather than normalized, since
++// the gateway cannot know how the origin decodes it.
++func unsafePath(rawPath string) bool {
++	path, _, _ := strings.Cut(rawPath, "?")
++	path = strings.ToLower(path)
++	if strings.ContainsAny(path, "\\") || strings.Contains(path, "%2f") || strings.Contains(path, "%5c") {
++		return true
++	}
++	for _, segment := range strings.Split(path, "/") {
++		if dots := strings.ReplaceAll(segment, "%2e", "."); dots == "." || dots == ".." {
++			return true
++		}
++	}
++	return false
++}
++
+ // matchName reports whether any pattern matches dest, and how specific the
+ // best one is. A destination named by an IP literal is matched by "*" alone.
+ func (r compiledRule) matchName(dest Destination) (int, bool) {
+@@ -299,14 +370,18 @@ func (r compiledRule) portRank() int {
+ }
+ 
+ // matchRank orders matches as the API describes: the name first, then the
+-// port, lower is more specific. Rules that tie keep policy order.
+-type matchRank struct{ name, port int }
++// port, then the path, lower is more specific. Rules that tie keep policy
++// order.
++type matchRank struct{ name, port, path int }
+ 
+ func (m matchRank) beats(o matchRank) bool {
+ 	if m.name != o.name {
+ 		return m.name < o.name
+ 	}
+-	return m.port < o.port
++	if m.port != o.port {
++		return m.port < o.port
++	}
++	return m.path < o.path
+ }
+ 
+ // HostnamePattern is one parsed host or SNI pattern: an exact name, a
+diff --git a/internal/egresspolicy/egresspolicy_test.go b/internal/egresspolicy/egresspolicy_test.go
+index cd27c02b5..fab70b83f 100644
+--- a/internal/egresspolicy/egresspolicy_test.go
++++ b/internal/egresspolicy/egresspolicy_test.go
+@@ -542,3 +542,131 @@ func TestValidateDNSEgressPolicy(t *testing.T) {
+ 		}
+ 	}
+ }
++
++func scopedHttpsRule(host string, prefixes ...string) *ateapi.EgressRule {
++	return &ateapi.EgressRule{Https: &ateapi.HttpsRule{Hostnames: []string{host}, PathPrefixes: prefixes}}
++}
++
++func atPath(host, path string) Destination {
++	return Destination{Hostname: host, Path: path, HasPath: true}
++}
++
++func TestEvaluateRequestPathPrefixes(t *testing.T) {
++	// A scoped rule, a catch-all, and a longer prefix, in that policy order.
++	zs := scopedHttpsRule("github.com", "/zach-source/")
++	all := httpsRule("github.com")
++	nested := scopedHttpsRule("github.com", "/zach-source/private/", "/other/")
++	tests := []struct {
++		name   string
++		policy *ateapi.EgressPolicy
++		dest   Destination
++		want   int // deciding rule index, -1 for a deny
++	}{
++		{"prefix beats catch-all", policy(all, zs), atPath("github.com", "/zach-source/claude-factory.git/info/refs?service=git-receive-pack"), 1},
++		{"catch-all serves other paths", policy(all, zs), atPath("github.com", "/stigenai/substrate.git/info/refs"), 0},
++		{"policy order does not matter", policy(zs, all), atPath("github.com", "/stigenai/x"), 1},
++		{"longest prefix wins", policy(zs, nested, all), atPath("github.com", "/zach-source/private/repo.git"), 1},
++		{"shorter prefix when the longer does not match", policy(nested, zs, all), atPath("github.com", "/zach-source/public.git"), 1},
++		{"second prefix of a rule", policy(zs, nested), atPath("github.com", "/other/x"), 1},
++		{"no match among scoped rules denies", policy(zs, nested), atPath("github.com", "/stigenai/x"), -1},
++		{"query is not part of the path", policy(all, zs), atPath("github.com", "/stigenai/x?next=/zach-source/"), 0},
++		{"prefix is matched as a prefix, not a segment", policy(all, zs), atPath("github.com", "/zach-source-evil/x"), 0},
++		{"prefix is not an owner name prefix", policy(all, zs), atPath("github.com", "/zach-sourcery/x"), 0},
++		{"a semicolon after dot-dot is not a dot segment", policy(all, zs), atPath("github.com", "/zach-source/..;/x"), 1},
++		{"a doubled leading slash is another path", policy(all, zs), atPath("github.com", "//zach-source/x"), 0},
++		{"git smart HTTP POST takes the scoped rule", policy(all, scopedHttpsRule("github.com", "/o/")), atPath("github.com", "/o/r.git/git-upload-pack"), 1},
++		{"empty path matches no prefix", policy(all, zs), atPath("github.com", ""), 0},
++		{"empty path under only scoped rules denies", policy(zs), atPath("github.com", ""), -1},
++		{"prefixes are case sensitive", policy(all, zs), atPath("github.com", "/Zach-Source/x"), 0},
++		{"unknown path ignores prefixes", policy(zs), host("github.com"), 0},
++		{"unknown path takes the first of equal ranks", policy(all, zs), host("github.com"), 0},
++		{"exact host still beats wildcard with a longer prefix", policy(scopedHttpsRule("*.com", "/zach-source/"), all), atPath("github.com", "/zach-source/x"), 1},
++		{"named port beats a longer prefix on all ports", policy(&ateapi.EgressRule{Https: &ateapi.HttpsRule{Hostnames: []string{"github.com"}, Ports: allPorts(), PathPrefixes: []string{"/zach-source/"}}}, httpsRuleOnPorts(ports(443), "github.com")), atPath("github.com", "/zach-source/x"), 1},
++		{"wrong port does not match", policy(zs), Destination{Hostname: "github.com", Port: 8443, Path: "/zach-source/x", HasPath: true}, -1},
++		{"other host is untouched", policy(zs, all), atPath("example.com", "/zach-source/x"), -1},
++	}
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			got := mustCompile(t, tc.policy).EvaluateRequest(tc.dest, true)
++			if got.RuleIndex != tc.want || got.Allowed != (tc.want >= 0) {
++				t.Errorf("EvaluateRequest(%+v) = %+v, want rule %d", tc.dest, got, tc.want)
++			}
++		})
++	}
++}
++
++// A path a server could read differently is denied when a prefixed rule could
++// decide it, so that "/stigenai/../zach-source/" cannot take the catch-all's
++// credential.
++func TestEvaluateRequestUnsafePaths(t *testing.T) {
++	zs := scopedHttpsRule("github.com", "/zach-source/")
++	all := httpsRule("github.com")
++	paths := []string{
++		"/stigenai/../zach-source/x",
++		"/zach-source/../stigenai/x",
++		"/stigenai/..",
++		"/stigenai/./x",
++		"/stigenai/%2e%2e/zach-source/x",
++		"/stigenai/%2E./zach-source/x",
++		"/stigenai/.%2e/zach-source/x",
++		"/stigenai%2f..%2fzach-source/x",
++		"/stigenai%2Fx",
++		"/stigenai%5cx",
++		`/stigenai\..\zach-source/x`,
++	}
++	for _, path := range paths {
++		t.Run(path, func(t *testing.T) {
++			if got := mustCompile(t, policy(all, zs)).EvaluateRequest(atPath("github.com", path), true); got.Allowed {
++				t.Errorf("EvaluateRequest(%q) = %+v, want a deny", path, got)
++			}
++		})
++	}
++	safe := []string{"/stigenai/x..y", "/stigenai/..x/y", "/stigenai/a.b/c", "/stigenai/x?p=../..", "/stigenai/x?p=%2f"}
++	for _, path := range safe {
++		t.Run("safe "+path, func(t *testing.T) {
++			if got := mustCompile(t, policy(all, zs)).EvaluateRequest(atPath("github.com", path), true); !got.Allowed || got.RuleIndex != 0 {
++				t.Errorf("EvaluateRequest(%q) = %+v, want the catch-all", path, got)
++			}
++		})
++	}
++	t.Run("without a prefixed rule the path is not inspected", func(t *testing.T) {
++		if got := mustCompile(t, policy(all)).EvaluateRequest(atPath("github.com", "/a/../b"), true); !got.Allowed {
++			t.Errorf("EvaluateRequest = %+v, want an allow", got)
++		}
++	})
++	t.Run("a prefixed rule for another host does not inspect the path", func(t *testing.T) {
++		p := policy(all, scopedHttpsRule("example.com", "/x/"))
++		if got := mustCompile(t, p).EvaluateRequest(atPath("github.com", "/a/../b"), true); !got.Allowed {
++			t.Errorf("EvaluateRequest = %+v, want an allow", got)
++		}
++	})
++	t.Run("the connection decision does not look at paths", func(t *testing.T) {
++		if got := mustCompile(t, policy(zs)).EvaluateRequest(host("github.com"), true); !got.Allowed {
++			t.Errorf("EvaluateRequest = %+v, want an allow", got)
++		}
++	})
++}
++
++func TestCompileDropsBadPathPrefixWithoutWidening(t *testing.T) {
++	for _, prefix := range []string{"no-slash", "/zach", "/zach-source", ""} {
++		t.Run(prefix, func(t *testing.T) {
++			compiled, errs := Compile(policy(scopedHttpsRule("github.com", prefix)))
++			if len(errs) != 1 {
++				t.Fatalf("Compile errors = %v, want 1", errs)
++			}
++			for _, path := range []string{"/anything", "/zach/x", "/zachary/x", "/zach-source/x"} {
++				if got := compiled.EvaluateRequest(atPath("github.com", path), true); got.Allowed {
++					t.Errorf("EvaluateRequest(%q) = %+v, want a deny: the rule must not widen to all paths", path, got)
++				}
++			}
++		})
++	}
++}
++
++func TestSNIRulesIncludePathScopedRules(t *testing.T) {
++	compiled := mustCompile(t, policy(scopedHttpsRule("github.com", "/zach-source/")))
++	want := []SNIRule{{Pattern: "github.com", Mode: SNIModeMITM}}
++	if got := compiled.SNIRules(443); !slices.Equal(got, want) {
++		t.Errorf("SNIRules(443) = %v, want %v", got, want)
++	}
++}
+-- 
+2.54.0
+

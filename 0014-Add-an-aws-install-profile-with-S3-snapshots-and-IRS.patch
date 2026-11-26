@@ -1,0 +1,461 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Zach Taylor <zctaylor.work@gmail.com>
+Date: Thu, 26 Nov 2026 17:35:27 -0500
+Subject: [PATCH 14/30] Add an aws install profile with S3 snapshots and IRSA
+
+A k0s cluster on AWS keeps snapshots in a real S3 bucket and gives atelet
+and ate-api-server their AWS access through IRSA, so there is no static
+key and no in-cluster rustfs. The profile layers on the k0s profile and
+selects with ATE_INSTALL_PROFILE=aws. It drops the rustfs endpoint, path
+style and key variables, sets the region and the role ARN annotations,
+and has no GKE reference.
+
+The gVisor SandboxConfig for the profile names runsc tarballs on your own
+bucket. mirror-runsc.sh copies them from the public gvisor bucket after
+it checks each hash, and it reads the releases and hashes from the
+default SandboxConfig so the two cannot drift. validate.sh renders the
+profile and checks it with kubeconform against the Substrate CRDs.
+
+Fork-Topic: aws
+Fork-Upstream: fork-only
+---
+ hack/aws/mirror-runsc.sh                      | 45 ++++++++++++
+ hack/aws/validate.sh                          | 60 ++++++++++++++++
+ .../aws/ate-api-server/kustomization.yaml     | 49 +++++++++++++
+ .../ate-install/aws/ate-otel-config.yaml      | 29 ++++++++
+ .../ate-install/aws/atelet/kustomization.yaml | 56 +++++++++++++++
+ manifests/ate-install/aws/kustomization.yaml  | 42 +++++++++++
+ .../aws/postgres/kustomization.yaml           | 20 ++++++
+ .../ate-install/aws/sandboxconfig-gvisor.yaml | 70 +++++++++++++++++++
+ 8 files changed, 371 insertions(+)
+ create mode 100755 hack/aws/mirror-runsc.sh
+ create mode 100755 hack/aws/validate.sh
+ create mode 100644 manifests/ate-install/aws/ate-api-server/kustomization.yaml
+ create mode 100644 manifests/ate-install/aws/ate-otel-config.yaml
+ create mode 100644 manifests/ate-install/aws/atelet/kustomization.yaml
+ create mode 100644 manifests/ate-install/aws/kustomization.yaml
+ create mode 100644 manifests/ate-install/aws/postgres/kustomization.yaml
+ create mode 100644 manifests/ate-install/aws/sandboxconfig-gvisor.yaml
+
+diff --git a/hack/aws/mirror-runsc.sh b/hack/aws/mirror-runsc.sh
+new file mode 100755
+index 000000000..acc19ddf1
+--- /dev/null
++++ b/hack/aws/mirror-runsc.sh
+@@ -0,0 +1,45 @@
++#!/usr/bin/env bash
++
++# Copyright 2026 The Agent Substrate Authors
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++# Copy the gVisor release tarballs that manifests/ate-install/sandboxconfig-gvisor.yaml
++# names (each release, amd64 and arm64) from the public gvisor bucket to an S3
++# location. Check each sha256 before the upload.
++# Usage: GVISOR_MIRROR_S3_URI=s3://BUCKET/PREFIX hack/aws/mirror-runsc.sh
++# Use AWS_PROFILE or the default AWS provider chain for the upload.
++# The upload paths match manifests/ate-install/aws/sandboxconfig-gvisor.yaml.
++
++set -o errexit -o nounset -o pipefail
++
++: "${GVISOR_MIRROR_S3_URI:?Set GVISOR_MIRROR_S3_URI to s3://BUCKET/PREFIX}"
++
++ROOT="$(git rev-parse --show-toplevel)"
++SRC_URL_PREFIX="gs://gvisor/releases/release/"
++DEST="${GVISOR_MIRROR_S3_URI%/}"
++
++work="$(mktemp -d)"
++trap 'rm -rf "${work}"' EXIT
++
++# Each "url:" line is followed by its "sha256:" line.
++awk '/url: "gs:\/\//{gsub(/"/,"",$2); url=$2} /sha256:/{gsub(/"/,"",$2); print url, $2}' \
++  "${ROOT}/manifests/ate-install/sandboxconfig-gvisor.yaml" |
++  while read -r url sum; do
++    path="${url#"${SRC_URL_PREFIX}"}" # RELEASE/ARCH/gvisor.tar.zstd
++    file="${work}/$(echo "${path}" | tr / _)"
++    curl --fail --silent --show-error --location \
++      "https://storage.googleapis.com/gvisor/releases/release/${path}" --output "${file}"
++    echo "${sum}  ${file}" | shasum -a 256 --check --status
++    aws s3 cp "${file}" "${DEST}/${path}"
++  done
+diff --git a/hack/aws/validate.sh b/hack/aws/validate.sh
+new file mode 100755
+index 000000000..5a5956e68
+--- /dev/null
++++ b/hack/aws/validate.sh
+@@ -0,0 +1,60 @@
++#!/usr/bin/env bash
++
++# Copyright 2026 The Agent Substrate Authors
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++# Render the aws profile and its SandboxConfig, and check them with kubeconform
++# against the Kubernetes schemas and the Substrate CRDs.
++# Fail if a gs:// URL or a GKE path remains in the output.
++# Needs kustomize, kubeconform and python3 with PyYAML.
++
++set -o errexit -o nounset -o pipefail
++
++ROOT="$(git rev-parse --show-toplevel)"
++cd "${ROOT}"
++
++work="$(mktemp -d)"
++trap 'rm -rf "${work}"' EXIT
++
++# One JSON schema per CRD version, named <Kind>_<version>.json.
++python3 -I - "${ROOT}/manifests/ate-install/generated" "${work}" <<'EOF'
++import json, pathlib, sys, yaml
++
++src, dst = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
++for f in src.glob("ate.dev_*.yaml"):
++    for doc in yaml.safe_load_all(f.read_text()):
++        if not doc or doc.get("kind") != "CustomResourceDefinition":
++            continue
++        kind = doc["spec"]["names"]["kind"]
++        for v in doc["spec"]["versions"]:
++            (dst / f"{kind}_{v['name']}.json").write_text(
++                json.dumps(v["schema"]["openAPIV3Schema"]))
++EOF
++
++{
++  kustomize build --load-restrictor LoadRestrictionsNone manifests/ate-install/aws
++  echo ---
++  cat manifests/ate-install/aws/sandboxconfig-gvisor.yaml
++} >"${work}/rendered.yaml"
++
++if grep -nE 'gs://|/home/kubernetes' "${work}/rendered.yaml"; then
++  echo "FAIL: the rendered output has a GKE reference" >&2
++  exit 1
++fi
++
++# The ko:// image references are resolved by ate-setup at install.
++kubeconform -strict -summary \
++  -schema-location default \
++  -schema-location "${work}/{{ .ResourceKind }}_{{ .ResourceAPIVersion }}.json" \
++  "${work}/rendered.yaml"
+diff --git a/manifests/ate-install/aws/ate-api-server/kustomization.yaml b/manifests/ate-install/aws/ate-api-server/kustomization.yaml
+new file mode 100644
+index 000000000..d2b0135b5
+--- /dev/null
++++ b/manifests/ate-install/aws/ate-api-server/kustomization.yaml
+@@ -0,0 +1,49 @@
++# Copyright 2026 The Agent Substrate Authors
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++apiVersion: kustomize.config.k8s.io/v1beta1
++kind: Kustomization
++
++# ate-api-server's object-store plugin writes and deletes snapshots in S3 with
++# the IRSA role of its service account.
++resources:
++  - ../../ate-api-server.yaml
++
++patches:
++  - patch: |-
++      apiVersion: v1
++      kind: ServiceAccount
++      metadata:
++        name: ate-api-server
++        namespace: ate-system
++        annotations:
++          # EDIT
++          eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/ate-api-server
++  - patch: |-
++      apiVersion: apps/v1
++      kind: Deployment
++      metadata:
++        name: ate-api-server
++        namespace: ate-system
++      spec:
++        template:
++          spec:
++            initContainers:
++            - name: objectstore-plugin
++              env:
++              - name: ATE_STORAGE_BACKEND
++                value: s3
++              - name: AWS_REGION
++                # EDIT
++                value: us-east-1
+diff --git a/manifests/ate-install/aws/ate-otel-config.yaml b/manifests/ate-install/aws/ate-otel-config.yaml
+new file mode 100644
+index 000000000..05e5e1926
+--- /dev/null
++++ b/manifests/ate-install/aws/ate-otel-config.yaml
+@@ -0,0 +1,29 @@
++# Copyright 2026 The Agent Substrate Authors
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++# stigenai aws profile (same as ../k0s): the fleet already runs an OTLP collector
++# (monitoring/otel-collector, fan-out to Tempo/Prometheus/Loki), so control
++# plane telemetry goes there instead of to a bundled collector. Same name as
++# ../ate-otel-config.yaml, so every component's envFrom resolves to it.
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: ate-otel-config
++  namespace: ate-system
++data:
++  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector.monitoring.svc:4317
++  OTEL_METRIC_EXPORT_INTERVAL: "10000"
++  OTEL_METRIC_EXPORT_TIMEOUT: "10000"
++  OTEL_LOGS_EXPORTER: otlp
++  ATE_WORKER_OTEL_LOGS_EXPORTER: otlp
+diff --git a/manifests/ate-install/aws/atelet/kustomization.yaml b/manifests/ate-install/aws/atelet/kustomization.yaml
+new file mode 100644
+index 000000000..cbe542818
+--- /dev/null
++++ b/manifests/ate-install/aws/atelet/kustomization.yaml
+@@ -0,0 +1,56 @@
++# Copyright 2026 The Agent Substrate Authors
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++apiVersion: kustomize.config.k8s.io/v1beta1
++kind: Kustomization
++
++# ../../k0s/atelet with S3 through IRSA instead of the in-cluster rustfs: the
++# endpoint, path-style and static key variables go, and the region and the
++# role of the service account come in.
++resources:
++  - ../../k0s/atelet
++
++patches:
++  - patch: |-
++      apiVersion: v1
++      kind: ServiceAccount
++      metadata:
++        name: atelet
++        namespace: ate-system
++        annotations:
++          # EDIT
++          eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/ate-atelet
++  - patch: |-
++      apiVersion: apps/v1
++      kind: DaemonSet
++      metadata:
++        name: atelet
++        namespace: ate-system
++      spec:
++        template:
++          spec:
++            initContainers:
++            - name: objectstore-plugin
++              env:
++              - name: AWS_REGION
++                # EDIT
++                value: us-east-1
++              - name: AWS_ENDPOINT_URL
++                $patch: delete
++              - name: AWS_S3_USE_PATH_STYLE
++                $patch: delete
++              - name: AWS_ACCESS_KEY_ID
++                $patch: delete
++              - name: AWS_SECRET_ACCESS_KEY
++                $patch: delete
+diff --git a/manifests/ate-install/aws/kustomization.yaml b/manifests/ate-install/aws/kustomization.yaml
+new file mode 100644
+index 000000000..e06965fc7
+--- /dev/null
++++ b/manifests/ate-install/aws/kustomization.yaml
+@@ -0,0 +1,42 @@
++# Copyright 2026 The Agent Substrate Authors
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++apiVersion: kustomize.config.k8s.io/v1beta1
++kind: Kustomization
++
++# stigenai aws profile (ATE_INSTALL_PROFILE=aws, with ATE_INSTALL_KIND=true): a
++# k0s cluster on AWS. It builds on ../k0s (kubelet root /var/lib/k0s/kubelet,
++# the fleet's OTLP collector, no pod-certificate-controller.yaml, the optional
++# ate-registry-auth Secret) and changes the storage side:
++# - Snapshots go to a real S3 bucket. atelet and ate-api-server get AWS access
++#   from IRSA, so there is no static key and no in-cluster rustfs.
++# - Nothing here refers to GKE: no /home/kubernetes/bin hostPath and no GCP
++#   registry auth.
++# - The runsc tarballs come from a bucket you own: see sandboxconfig-gvisor.yaml
++#   and hack/aws/mirror-runsc.sh.
++#
++# Before install, edit the values marked EDIT: the region and the two role
++# ARNs in ./ate-api-server and ./atelet. Give ate-setup the bucket with
++# --storage-bucket-name and --snapshot-location s3://BUCKET/.
++#
++# ate-setup applies the default gvisor-default SandboxConfig with gs:// URLs.
++# After that, apply ./sandboxconfig-gvisor.yaml to move it to your S3 mirror.
++resources:
++  - ./ate-api-server
++  - ../ate-idp-server.yaml
++  - ../ate-controller.yaml
++  - ./atelet
++  - ../atenet-router.yaml
++  - ../ate-system-networkpolicies.yaml
++  - ate-otel-config.yaml
+diff --git a/manifests/ate-install/aws/postgres/kustomization.yaml b/manifests/ate-install/aws/postgres/kustomization.yaml
+new file mode 100644
+index 000000000..336b4b4f7
+--- /dev/null
++++ b/manifests/ate-install/aws/postgres/kustomization.yaml
+@@ -0,0 +1,20 @@
++# Copyright 2026 The Agent Substrate Authors
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++apiVersion: kustomize.config.k8s.io/v1beta1
++kind: Kustomization
++
++# The aws profile runs the same bundled single-replica PostgreSQL as ../k0s.
++resources:
++  - ../../k0s/postgres
+diff --git a/manifests/ate-install/aws/sandboxconfig-gvisor.yaml b/manifests/ate-install/aws/sandboxconfig-gvisor.yaml
+new file mode 100644
+index 000000000..ad9dc1d70
+--- /dev/null
++++ b/manifests/ate-install/aws/sandboxconfig-gvisor.yaml
+@@ -0,0 +1,70 @@
++# Copyright 2026 The Agent Substrate Authors
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++# stigenai aws profile: the SandboxConfig of ../sandboxconfig-gvisor.yaml with
++# the runsc tarballs on your own S3 bucket. EDIT the bucket and the prefix.
++# atelet opens the s3:// URLs with its IRSA role. hack/aws/mirror-runsc.sh
++# copies the tarballs and reads the releases and hashes from that file, so keep
++# the two files the same.
++#
++# Cluster-wide SandboxConfig for the gVisor (runsc) sandbox class, shipped with
++# the platform as the class default so gVisor WorkerPools resolve it unless
++# they pin a specific configRef. atelet fetches the gVisor release tarball
++# (gvisor.tar.zstd: runsc plus the gvisor-bin/ helpers runsc requires next to
++# it) matching the worker node's architecture and extracts it locally. To pin a
++# different release, add a version below and point defaultVersion at it, or
++# create another SandboxConfig and reference it from the WorkerPool.
++#
++# A bump adds a version and points defaultVersion at it. Keep the
++# previous version unless it has a known vulnerability: an actor restores its
++# memory only on the version its snapshot was taken with.
++apiVersion: ate.dev/v1
++kind: SandboxConfig
++metadata:
++  name: gvisor-default
++  annotations:
++    sandboxconfig.ate.dev/is-class-default: "true"
++spec:
++  sandboxClass: gvisor
++  defaultVersion: v7
++  versions:
++  # gVisor release 20261026.0. ateworker-gvisor saves container rootfs overlays
++  # (rootfs/) and durable-dir volumes (fs/) as separate checkpoint bundles. That
++  # needs google/gvisor@b79256080dec, first in tagged release 20261019.0.
++  # ateworker-gvisor also runs the sandbox with no root container
++  # (google/gvisor#15551). This release's restore picks each container's init
++  # process correctly in such a sandbox (google/gvisor@29b97c66d945).
++  - name: v6
++    state: Enabled
++    assets:
++      amd64:
++        gvisor:
++          url: "s3://EXAMPLE-BUCKET/gvisor/20261026.0/x86_64/gvisor.tar.zstd"
++          sha256: "708afc62f2ee82d19930c703e85f9dab4f27a78c0aec40c0f55eb1040107f1a7"
++      arm64:
++        gvisor:
++          url: "s3://EXAMPLE-BUCKET/gvisor/20261026.0/aarch64/gvisor.tar.zstd"
++          sha256: "6257e49955f13e6caceb2c4181c5dc5406c460e805940c944e67ad65553f5b02"
++  # gVisor release 20261102.0.
++  - name: v7
++    state: Enabled
++    assets:
++      amd64:
++        gvisor:
++          url: "s3://EXAMPLE-BUCKET/gvisor/20261102.0/x86_64/gvisor.tar.zstd"
++          sha256: "a1439ffbba7d212e0fde32ea79fa9bb51cbc4c5f6c16af1f047260290b861d42"
++      arm64:
++        gvisor:
++          url: "s3://EXAMPLE-BUCKET/gvisor/20261102.0/aarch64/gvisor.tar.zstd"
++          sha256: "f702ae92ad7a0c4134be34ca23f52966dbb696db0c0f5b8ec439210ab2cd7c6a"
+-- 
+2.54.0
+

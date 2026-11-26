@@ -1,0 +1,677 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Zach Taylor <zctaylor.work@gmail.com>
+Date: Thu, 26 Nov 2026 17:32:42 -0500
+Subject: [PATCH 12/30] Add a manual e2e that runs the LayerFS spike image as a
+ microVM actor
+
+Run the LayerFS spike image on a pool with guestDevices: [fuse] and on a
+pool without it, to measure the FUSE-backed layer store in a microVM
+actor. The test lives outside internal/e2e/suites, so the normal e2e
+lanes do not run it. The layerfs-e2e workflow runs it on a kind cluster
+when a pull request gets the layerfs-e2e label, or by hand, and writes
+the timings to the job summary.
+
+Fork-Topic: layerfs-e2e
+Fork-Upstream: fork-only
+---
+ .github/workflows/layerfs-e2e.yaml            | 127 +++++++++
+ .../layerfs/layerfs-templates.yaml.tmpl       |  69 +++++
+ internal/e2e/manual/layerfs/layerfs_test.go   | 249 ++++++++++++++++++
+ internal/e2e/manual/layerfs/run.py            | 147 +++++++++++
+ internal/e2e/manual/layerfs/testmain_test.go  |  24 ++
+ 5 files changed, 616 insertions(+)
+ create mode 100644 .github/workflows/layerfs-e2e.yaml
+ create mode 100644 internal/e2e/manual/layerfs/layerfs-templates.yaml.tmpl
+ create mode 100644 internal/e2e/manual/layerfs/layerfs_test.go
+ create mode 100644 internal/e2e/manual/layerfs/run.py
+ create mode 100644 internal/e2e/manual/layerfs/testmain_test.go
+
+diff --git a/.github/workflows/layerfs-e2e.yaml b/.github/workflows/layerfs-e2e.yaml
+new file mode 100644
+index 000000000..283642775
+--- /dev/null
++++ b/.github/workflows/layerfs-e2e.yaml
+@@ -0,0 +1,127 @@
++# Copyright 2026 The Agent Substrate Authors
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++# Manual test: run the LayerFS spike image as a micro-VM actor in a
++# throwaway kind cluster, on a pool with guestDevices: [fuse] and on a pool
++# without it. The results go to the job summary.
++#
++# To start it, add the label layerfs-e2e to a pull request from this
++# repository. After this file is on the default branch, you can also use:
++#   gh workflow run layerfs-e2e.yaml --ref <branch>
++name: layerfs-e2e
++on:
++  workflow_dispatch:
++    inputs:
++      image:
++        description: LayerFS spike image
++        default: ghcr.io/stigenai/layerfs-spike:probe-67310175e
++  pull_request:
++    types: [labeled]
++permissions:
++  contents: read
++  # Pull the LayerFS spike image from ghcr.io with GITHUB_TOKEN.
++  packages: read
++jobs:
++  layerfs:
++    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'layerfs-e2e'
++    runs-on: ubuntu-latest
++    timeout-minutes: 90
++    env:
++      ATE_ATENET_DATAPLANE: envoy
++      ARTIFACTS: ${{ github.workspace }}/_artifacts
++      LAYERFS_SOURCE_IMAGE: ${{ inputs.image || 'ghcr.io/stigenai/layerfs-spike:probe-67310175e' }}
++    steps:
++    - name: Checkout
++      uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
++    - name: Setup Go
++      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
++      with:
++        go-version-file: 'go.mod'
++        cache: false
++    - name: Restore Go build cache
++      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
++      with:
++        path: |
++          ~/.cache/go-build
++          ~/go/pkg/mod
++        key: e2e-go-${{ runner.os }}-${{ github.sha }}
++        restore-keys: e2e-go-${{ runner.os }}-
++    - name: Set up Docker Buildx
++      uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
++      with:
++        driver-opts: network=host
++        buildkitd-config-inline: |
++          [registry."localhost:5001"]
++            http = true
++    - name: Expose GitHub runtime to buildx
++      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
++      with:
++        script: |
++          for (const [key, value] of Object.entries(process.env)) {
++            if (key.startsWith('ACTIONS_')) core.exportVariable(key, value);
++          }
++    - name: Cache micro-VM assets
++      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
++      with:
++        path: bin/microvm-assets
++        key: microvm-assets-${{ hashFiles('manifests/ate-install/sandboxconfig-microvm.yaml.tmpl') }}
++    - name: Free disk space
++      # The LayerFS spike image is about 6.4 GB unpacked, and the kind node
++      # stores it a second time.
++      run: |
++        sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
++        df -h /
++    - name: Enable KVM
++      run: |
++        echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
++          | sudo tee /etc/udev/rules.d/99-kvm4all.rules
++        sudo udevadm control --reload-rules
++        sudo udevadm trigger --name-match=kvm
++    - name: Create cluster
++      run: hack/create-kind-cluster.sh
++    - name: Install Agent Substrate
++      # Also stages the micro-VM assets and installs the microvm SandboxConfig.
++      run: go run ./cmd/ate-setup --kind deploy ate-system
++    - name: Copy the LayerFS image into the kind registry
++      # Registry to registry, so the runner disk holds no extra copy.
++      env:
++        GH_TOKEN: ${{ github.token }}
++      run: |
++        printf '%s' "${GH_TOKEN}" | skopeo login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
++        skopeo copy --dest-tls-verify=false --digestfile /tmp/layerfs.digest \
++          "docker://${LAYERFS_SOURCE_IMAGE}" docker://localhost:5001/layerfs-spike:ci
++        skopeo logout ghcr.io
++        echo "LAYERFS_IMAGE=localhost:5001/layerfs-spike@$(cat /tmp/layerfs.digest)" >> "${GITHUB_ENV}"
++    - name: Run the LayerFS test
++      env:
++        E2E_SANDBOX_CLASS: microvm
++        E2E_JUNIT_FILE: ${{ github.workspace }}/_artifacts/e2e-layerfs.xml
++      run: hack/run-e2e-kind.sh ./internal/e2e/manual/layerfs/... -v -run TestLayerFS -args --no-color
++    - name: Dump diagnostics on failure
++      if: failure()
++      run: |
++        kubectl --context kind-kind get workerpool,pods -A -o wide || true
++        kubectl --context kind-kind get pods -A -l ate.dev/worker-pool \
++          -o 'custom-columns=:.metadata.namespace,:.metadata.name' --no-headers 2>/dev/null \
++          | while read -r ns name; do
++              echo "=== logs: ${ns}/${name} ==="
++              kubectl --context kind-kind logs -n "${ns}" "${name}" --all-containers --tail=200 || true
++            done
++        for p in $(kubectl --context kind-kind get pods -n ate-system -o name 2>/dev/null); do
++          echo "=== logs: ate-system/${p} ==="
++          kubectl --context kind-kind logs -n ate-system "${p}" --all-containers --tail=200 || true
++        done
++    - name: Tear down
++      if: always()
++      run: hack/delete-kind-cluster.sh || kind delete cluster
+diff --git a/internal/e2e/manual/layerfs/layerfs-templates.yaml.tmpl b/internal/e2e/manual/layerfs/layerfs-templates.yaml.tmpl
+new file mode 100644
+index 000000000..52d39b9ed
+--- /dev/null
++++ b/internal/e2e/manual/layerfs/layerfs-templates.yaml.tmpl
+@@ -0,0 +1,69 @@
++# Copyright 2026 The Agent Substrate Authors
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++# The LayerFS test's ActorTemplates: protojson-shaped ateapi.ActorTemplate
++# documents. Both run run.py in the LayerFS spike image with SYS_ADMIN, which
++# the mount needs, and SETUID and SETGID, which ax_probe needs to run its
++# command in the mount as uid 1001. They differ only in the pool they select
++# from the guestdevices pool manifest.
++# The test fills the LAYERFS_IMAGE placeholder (pinned by digest) and the
++# LAYERFS_COMMAND placeholder (a JSON list that runs run.py).
++
++metadata:
++  atespace: ate-e2e${FIXTURE_SUFFIX}
++  name: layerfs-fuse
++workerSelector:
++  matchLabels:
++    workload: guestdevices-fuse
++containers:
++- name: layerfs
++  image: ${LAYERFS_IMAGE}
++  command: ${LAYERFS_COMMAND}
++  securityContext:
++    capabilities:
++      add: ["SYS_ADMIN", "SETUID", "SETGID"]
++  wakeupProbe:
++    httpGet:
++      path: /healthz
++      port: 80
++    timeoutSeconds: 60
++resources:
++  limits:
++    cpuMillicores: 1000
++    memoryBytes: 536870912 # 512Mi
++
++---
++
++metadata:
++  atespace: ate-e2e${FIXTURE_SUFFIX}
++  name: layerfs-nofuse
++workerSelector:
++  matchLabels:
++    workload: guestdevices-nofuse
++containers:
++- name: layerfs
++  image: ${LAYERFS_IMAGE}
++  command: ${LAYERFS_COMMAND}
++  securityContext:
++    capabilities:
++      add: ["SYS_ADMIN", "SETUID", "SETGID"]
++  wakeupProbe:
++    httpGet:
++      path: /healthz
++      port: 80
++    timeoutSeconds: 60
++resources:
++  limits:
++    cpuMillicores: 1000
++    memoryBytes: 536870912 # 512Mi
+diff --git a/internal/e2e/manual/layerfs/layerfs_test.go b/internal/e2e/manual/layerfs/layerfs_test.go
+new file mode 100644
+index 000000000..871b53cfe
+--- /dev/null
++++ b/internal/e2e/manual/layerfs/layerfs_test.go
+@@ -0,0 +1,249 @@
++// Copyright 2026 The Agent Substrate Authors
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++// Package layerfs runs the LayerFS spike image as a micro-VM actor, on a pool
++// with guestDevices: [fuse] and on a pool without it. It is not in
++// internal/e2e/suites, so the normal e2e lanes do not run it. The workflow
++// .github/workflows/layerfs-e2e.yaml runs it.
++package layerfs
++
++import (
++	"context"
++	_ "embed"
++	"encoding/json"
++	"fmt"
++	"io"
++	"net/http"
++	"os"
++	"strings"
++	"testing"
++	"time"
++
++	"go.ate.dev/substrate/api/ateapi/v1"
++	"go.ate.dev/substrate/internal/e2e"
++	"go.ate.dev/substrate/internal/resources"
++)
++
++//go:embed run.py
++var runPy string
++
++// result holds the key=value pairs from one actor's RESULT and AX_PROBE
++// lines, and the times the test measures itself.
++type result struct {
++	kv        map[string]string
++	firstPass map[string]string // AX_PROBE warm=false
++	warmPass  map[string]string // AX_PROBE warm=true
++	resume    time.Duration
++	run       time.Duration
++	raw       string
++}
++
++func TestLayerFS(t *testing.T) {
++	image := os.Getenv("LAYERFS_IMAGE")
++	if image == "" || !e2e.IsMicroVM() {
++		t.Fatalf("set LAYERFS_IMAGE (pinned by digest) and E2E_SANDBOX_CLASS=microvm; got %q and %q", image, e2e.SandboxClass())
++	}
++	if _, err := e2e.CheckEnv("KO_DOCKER_REPO"); err != nil {
++		t.Fatalf("CheckEnv failed: %v", err)
++	}
++	// The API limits each command element to 4096 characters, so run.py
++	// goes in as chunks that a short program joins again.
++	command := []string{"/usr/bin/python3", "-c", "import sys; exec(''.join(sys.argv[1:]))"}
++	for rest := runPy; rest != ""; {
++		n := min(len(rest), 4000)
++		command, rest = append(command, rest[:n]), rest[n:]
++	}
++	commandJSON, err := json.Marshal(command)
++	if err != nil {
++		t.Fatal(err)
++	}
++	ctx := context.Background()
++	clients := e2e.GetClients()
++	namespace, _ := e2e.DeploySubstrateFixture(t, ctx, clients, e2e.SubstrateFixtureManifests{
++		Pool:     "internal/e2e/fixtures/guestdevices/guestdevices.yaml.tmpl",
++		Template: "internal/e2e/manual/layerfs/layerfs-templates.yaml.tmpl",
++	}, "layerfs", nil,
++		e2e.WithTemplateValue("LAYERFS_IMAGE", image),
++		e2e.WithTemplateValue("LAYERFS_COMMAND", string(commandJSON)))
++
++	fuse := runActor(t, ctx, clients, namespace, "layerfs-fuse")
++	nofuse := runActor(t, ctx, clients, namespace, "layerfs-nofuse")
++	writeSummary(t, fuse, nofuse)
++
++	if !strings.HasPrefix(fuse.kv["dev_fuse"], "character_special_file") {
++		t.Errorf("fuse pool: dev_fuse = %q, want a character device", fuse.kv["dev_fuse"])
++	}
++	for _, k := range []string{"init", "mount_first", "mount_warm", "overlay_write"} {
++		if fuse.kv[k] != "ok" {
++			t.Errorf("fuse pool: %s = %q, want ok", k, fuse.kv[k])
++		}
++	}
++	for _, p := range []map[string]string{fuse.firstPass, fuse.warmPass} {
++		if p["command_ok"] != "true" || p["unmount_ok"] != "true" {
++			t.Errorf("fuse pool: mount pass %v, want command_ok and unmount_ok true", p)
++		}
++	}
++	if nofuse.kv["dev_fuse"] != "missing" {
++		t.Errorf("pool without guestDevices: dev_fuse = %q, want missing", nofuse.kv["dev_fuse"])
++	}
++	if !strings.HasPrefix(nofuse.kv["mount_first"], "failed") {
++		t.Errorf("pool without guestDevices: mount_first = %q, want failed", nofuse.kv["mount_first"])
++	}
++}
++
++// runActor creates and resumes an actor from template, runs the LayerFS test
++// in it and parses the output.
++func runActor(t *testing.T, ctx context.Context, clients *e2e.Clients, namespace, template string) result {
++	t.Helper()
++	ref := &ateapi.ObjectRef{Atespace: namespace, Name: template + "-actor"}
++	if _, err := clients.SubstrateAPI.CreateActor(ctx, &ateapi.CreateActorRequest{Actor: &ateapi.Actor{
++		Metadata:      &ateapi.ResourceMetadata{Atespace: namespace, Name: ref.Name},
++		ActorTemplate: &ateapi.ObjectRef{Atespace: namespace, Name: template},
++	}}); err != nil {
++		t.Fatalf("CreateActor %q: %v", ref.Name, err)
++	}
++	t.Cleanup(func() {
++		// DeleteActor requires the actor to be suspended.
++		_, _ = clients.SubstrateAPI.SuspendActor(ctx, &ateapi.SuspendActorRequest{Actor: ref})
++		_, _ = clients.SubstrateAPI.DeleteActor(ctx, &ateapi.DeleteActorRequest{Actor: ref})
++	})
++	start := time.Now()
++	if _, err := e2e.ResumeActorAwaitCapacity(t, ctx, clients, &ateapi.ResumeActorRequest{Actor: ref}); err != nil {
++		t.Fatalf("ResumeActor %q: %v", ref.Name, err)
++	}
++	r := result{resume: time.Since(start)}
++
++	rc, err := e2e.NewRouterClient(t, ctx)
++	if err != nil {
++		t.Fatalf("NewRouterClient: %v", err)
++	}
++	defer rc.Close()
++	actor := resources.ActorRef{Atespace: namespace, Name: ref.Name}
++	get := func(path string) (int, []byte) {
++		resp, err := rc.Get(ctx, actor, path)
++		if err != nil {
++			t.Fatalf("GET %s for %q: %v", path, ref.Name, err)
++		}
++		defer resp.Body.Close()
++		body, _ := io.ReadAll(resp.Body)
++		return resp.StatusCode, body
++	}
++	// The test runs longer than one request can wait, so run.py runs it in
++	// the background and the test polls for the result.
++	start = time.Now()
++	if code, body := get("/run"); code != http.StatusOK {
++		t.Fatalf("GET /run for %q: status %d, body %q", ref.Name, code, body)
++	}
++	var body []byte
++	for {
++		code, b := get("/result")
++		body = b
++		if code == http.StatusOK {
++			break
++		}
++		if code != http.StatusAccepted {
++			t.Fatalf("GET /result for %q: status %d, body %q", ref.Name, code, b)
++		}
++		// run.py limits each step to 90s, so this is a safety net. The
++		// partial output still goes into the summary.
++		if time.Since(start) > 20*time.Minute {
++			t.Errorf("GET /result for %q: not done after 20m", ref.Name)
++			break
++		}
++		time.Sleep(2 * time.Second)
++	}
++	r.run = time.Since(start)
++	r.raw = string(body)
++	t.Logf("GET /run for %q:\n%s", ref.Name, body)
++	r.kv, r.firstPass, r.warmPass = parse(r.raw)
++	return r
++}
++
++// parse reads the key=value pairs from RESULT and AX_PROBE lines. A value
++// runs to the next space, so run.py writes spaces in values as "_".
++func parse(out string) (kv, first, warm map[string]string) {
++	kv, first, warm = map[string]string{}, map[string]string{}, map[string]string{}
++	for line := range strings.Lines(out) {
++		tag, rest, _ := strings.Cut(strings.TrimSpace(line), " ")
++		into := kv
++		switch {
++		case tag == "AX_PROBE" && strings.HasPrefix(rest, "warm=true "):
++			into = warm
++		case tag == "AX_PROBE" && strings.HasPrefix(rest, "warm=false "):
++			into = first
++		case tag != "AX_PROBE" && tag != "RESULT":
++			continue
++		}
++		for field := range strings.FieldsSeq(rest) {
++			if k, v, ok := strings.Cut(field, "="); ok {
++				into[k] = v
++			}
++		}
++	}
++	return kv, first, warm
++}
++
++// writeSummary appends a Markdown table to $GITHUB_STEP_SUMMARY, if it is set.
++func writeSummary(t *testing.T, fuse, nofuse result) {
++	t.Helper()
++	or := func(v string) string {
++		if v == "" {
++			return "-"
++		}
++		return strings.ReplaceAll(v, "_", " ")
++	}
++	rows := [][3]string{
++		{"/dev/fuse in the guest", or(fuse.kv["dev_fuse"]), or(nofuse.kv["dev_fuse"])},
++		{"Sample tree (entries, bytes)", or(fuse.kv["tree_entries"]) + ", " + or(fuse.kv["tree_bytes"]), or(nofuse.kv["tree_entries"]) + ", " + or(nofuse.kv["tree_bytes"])},
++		{"Actor resume (s)", fmt.Sprintf("%.2f", fuse.resume.Seconds()), fmt.Sprintf("%.2f", nofuse.resume.Seconds())},
++		{"Init: seal the store (s)", or(fuse.kv["init_s"]), or(nofuse.kv["init_s"])},
++		{"Store bytes", or(fuse.kv["store_bytes"]), or(nofuse.kv["store_bytes"])},
++		{"First mount: result", or(fuse.kv["mount_first"]), or(nofuse.kv["mount_first"])},
++		{"First mount: daemon start (s)", or(fuse.firstPass["daemon_start_s"]), or(nofuse.firstPass["daemon_start_s"])},
++		{"First mount: install store (s)", or(fuse.firstPass["install_s"]), or(nofuse.firstPass["install_s"])},
++		{"First mount: mount (s)", or(fuse.firstPass["mount_s"]), or(nofuse.firstPass["mount_s"])},
++		{"First mount: read and write command (s)", or(fuse.firstPass["command_s"]), or(nofuse.firstPass["command_s"])},
++		{"Warm mount: result", or(fuse.kv["mount_warm"]), or(nofuse.kv["mount_warm"])},
++		{"Warm mount: daemon start (s)", or(fuse.warmPass["daemon_start_s"]), or(nofuse.warmPass["daemon_start_s"])},
++		{"Warm mount: mount (s)", or(fuse.warmPass["mount_s"]), or(nofuse.warmPass["mount_s"])},
++		{"Warm mount: read and write command (s)", or(fuse.warmPass["command_s"]), or(nofuse.warmPass["command_s"])},
++		{"Files read in the mount", or(fuse.kv["read_files"]), or(nofuse.kv["read_files"])},
++		{"Write in the overlay", or(fuse.kv["overlay_write"]), or(nofuse.kv["overlay_write"])},
++		{"Work dir of the rows above", or(fuse.kv["workdir"]), or(nofuse.kv["workdir"])},
++		{"Rootfs work dir: init", or(fuse.kv["rootfs_init"]), or(nofuse.kv["rootfs_init"])},
++		{"Rootfs work dir: init (s)", or(fuse.kv["rootfs_init_s"]), or(nofuse.kv["rootfs_init_s"])},
++		{"Rootfs work dir: first mount", or(fuse.kv["rootfs_mount_first"]), or(nofuse.kv["rootfs_mount_first"])},
++		{"Rootfs work dir: warm mount", or(fuse.kv["rootfs_mount_warm"]), or(nofuse.kv["rootfs_mount_warm"])},
++		{"Whole test in the actor (s)", fmt.Sprintf("%.2f", fuse.run.Seconds()), fmt.Sprintf("%.2f", nofuse.run.Seconds())},
++	}
++	var b strings.Builder
++	b.WriteString("## LayerFS on micro-VM actors\n\n| Step | Pool with `guestDevices: [fuse]` | Pool without it |\n|---|---|---|\n")
++	for _, r := range rows {
++		fmt.Fprintf(&b, "| %s | %s | %s |\n", r[0], r[1], r[2])
++	}
++	t.Logf("summary:\n%s", b.String())
++	path := os.Getenv("GITHUB_STEP_SUMMARY")
++	if path == "" {
++		return
++	}
++	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644)
++	if err != nil {
++		t.Errorf("open GITHUB_STEP_SUMMARY: %v", err)
++		return
++	}
++	defer f.Close()
++	if _, err := f.WriteString(b.String()); err != nil {
++		t.Errorf("write GITHUB_STEP_SUMMARY: %v", err)
++	}
++}
+diff --git a/internal/e2e/manual/layerfs/run.py b/internal/e2e/manual/layerfs/run.py
+new file mode 100644
+index 000000000..ff178e4c5
+--- /dev/null
++++ b/internal/e2e/manual/layerfs/run.py
+@@ -0,0 +1,147 @@
++# Copyright 2026 The Agent Substrate Authors
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++# The LayerFS actor. It serves /healthz for the wakeup probe. GET /run starts
++# the LayerFS test once in the background. GET /result returns its output as
++# text/plain: status 202 while the test runs, 200 when it is done.
++# The test seals a store from a sample tree (ax_probe init), mounts it twice
++# (the first mount installs the store, the second is warm), reads files and
++# writes in the overlay. It runs two times: with the work dir on tmpfs, and on
++# the container rootfs. Lines that start with RESULT or AX_PROBE carry the
++# results. DIAG lines show the processes when a step does not exit in time.
++import http.server
++import subprocess
++import threading
++
++LOG = "/tmp/layerfs-run.log"
++lock = threading.Lock()
++proc = None
++
++TEST = r'''
++set -u
++export PATH=/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin
++BIN=/opt/layerfs/bin STEP_TIMEOUT=${STEP_TIMEOUT:-90}
++echo "RESULT dev_fuse=$( (stat -c '%F_%t:%T' /dev/fuse 2>/dev/null || echo missing) | tr ' ' _)"
++CMD='test "$(cat README)" = hello-layerfs && echo "RESULT read_files=$(find . -type f | wc -l)" && echo overlay-write > new.txt && test "$(cat new.txt)" = overlay-write && echo "RESULT overlay_write=ok"'
++
++# diag prints each process with its state, wait channel, kernel stack and
++# open files, and the FUSE mounts. The image has no ps.
++diag() {
++  for d in /proc/[0-9]*; do
++    p=${d#/proc/}
++    [ "$p" = "$$" ] && continue
++    args=$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null) || continue
++    echo "DIAG pid=$p state=$(awk '/^State:/{print $2}' "$d/status" 2>/dev/null) wchan=$(cat "$d/wchan" 2>/dev/null) args=$args"
++    case "$args" in *ax_probe*|*layerfs-daemon*|*find*|*cat*)
++      for t in "$d"/task/*; do
++        echo "DIAG   task=${t##*/} comm=$(cat "$t/comm" 2>/dev/null) wchan=$(cat "$t/wchan" 2>/dev/null)"
++        sed 's/^/DIAG     /' "$t/stack" 2>/dev/null | head -12
++      done
++      ls -l "$d/fd" 2>/dev/null | sed 's/^/DIAG   fd /' | head -20
++    esac
++  done
++  grep fuse /proc/mounts | sed 's/^/DIAG mount /'
++}
++
++# kill_tree kills a process and all of its descendants.
++kill_tree() {
++  local c
++  for c in $(grep -l "^PPid:[[:space:]]*$1\$" /proc/[0-9]*/status 2>/dev/null); do
++    c=${c#/proc/}; kill_tree "${c%/status}"
++  done
++  kill -9 "$1" 2>/dev/null
++}
++
++# step runs a command with a time limit. AX_PROBE and RESULT lines pass
++# through, with the prefix $P on each key. If the limit is hit, it prints diag first.
++step() {
++  local name=$1; shift
++  local out="$W/$name.out" pid rc i
++  "$@" > "$out" 2>&1 &
++  pid=$!
++  for i in $(seq "$STEP_TIMEOUT"); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
++  if kill -0 "$pid" 2>/dev/null; then
++    echo "DIAG ${P}${name} still running after ${STEP_TIMEOUT}s"
++    diag
++    kill_tree "$pid"
++    wait "$pid"; rc=124
++  else
++    wait "$pid"; rc=$?
++  fi
++  grep -E '^(RESULT|AX_PROBE) ' "$out" | sed "s/ \([a-z_]*=\)/ ${P}\1/g"
++  grep -vE '^(RESULT|AX_PROBE) |^\s*$' "$out" | tail -15 | sed "s/^/LOG ${P}${name}: /"
++  if [ $rc -eq 124 ]; then
++    echo "RESULT ${P}${name}=failed:_no_exit_after_${STEP_TIMEOUT}s"
++  elif [ $rc -ne 0 ]; then
++    echo "RESULT ${P}${name}=failed:_$(grep -vE '^(RESULT|AX_PROBE) |^\s*$|RUST_BACKTRACE' "$out" | head -1 | tr ' ' _)"
++  else
++    echo "RESULT ${P}${name}=ok"
++  fi
++}
++
++# phase runs the whole test with its work dir in $W.
++phase() {
++  rm -rf "$W/src" "$W/state"; mkdir -p "$W/src"
++  # The sample tree is a real tree from the image plus one known file.
++  cp -a /usr/lib/python3.11 "$W/src/python3.11"
++  echo hello-layerfs > "$W/src/README"
++  echo "RESULT ${P}tree_entries=$(find "$W/src" | wc -l) ${P}tree_bytes=$(du -sb "$W/src" | cut -f1)"
++  step init "$BIN/ax_probe" init "$W/src" "$W/state"
++  # The daemon refuses to run the command as root, so it runs as uid 1001.
++  step mount_first "$BIN/ax_probe" mount "$W/state" "$BIN/layerfs-daemon" 1001 "$CMD"
++  step mount_warm "$BIN/ax_probe" mount "$W/state" "$BIN/layerfs-daemon" 1001 "$CMD"
++}
++
++# Phase 1: a tmpfs work dir in guest RAM. Phase 2: the container rootfs,
++# which the guest gets over virtio-fs. Keys from phase 2 start with rootfs_.
++W=/tmp/layerfs-tmpfs P=
++mkdir -p "$W" && mount -t tmpfs -o size=512m tmpfs "$W" && echo "RESULT workdir=tmpfs" || echo "RESULT workdir=failed"
++phase
++W=/tmp/layerfs-rootfs P=rootfs_
++mkdir -p "$W"
++phase
++'''
++
++
++class Handler(http.server.BaseHTTPRequestHandler):
++    def do_GET(self):
++        global proc
++        code = 200
++        if self.path == "/healthz":
++            body = b"ok\n"
++        elif self.path == "/run":
++            with lock:
++                if proc is None:
++                    proc = subprocess.Popen(["bash", "-c", TEST], stdout=open(LOG, "wb"), stderr=subprocess.STDOUT)
++            body = b"started\n"
++        elif self.path == "/result":
++            with lock:
++                if proc is None:
++                    self.send_error(409, "GET /run first")
++                    return
++                if proc.poll() is None:
++                    code = 202
++            with open(LOG, "rb") as f:
++                body = f.read()
++        else:
++            self.send_error(404)
++            return
++        self.send_response(code)
++        self.send_header("Content-Type", "text/plain")
++        self.send_header("Content-Length", str(len(body)))
++        self.end_headers()
++        self.wfile.write(body)
++
++
++http.server.ThreadingHTTPServer(("", 80), Handler).serve_forever()
+diff --git a/internal/e2e/manual/layerfs/testmain_test.go b/internal/e2e/manual/layerfs/testmain_test.go
+new file mode 100644
+index 000000000..7f6c7e2d6
+--- /dev/null
++++ b/internal/e2e/manual/layerfs/testmain_test.go
+@@ -0,0 +1,24 @@
++// Copyright 2026 The Agent Substrate Authors
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package layerfs
++
++import (
++	"os"
++	"testing"
++
++	"go.ate.dev/substrate/internal/e2e"
++)
++
++func TestMain(m *testing.M) { os.Exit(e2e.RunTestMain(m)) }
+-- 
+2.54.0
+

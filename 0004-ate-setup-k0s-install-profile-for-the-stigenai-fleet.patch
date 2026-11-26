@@ -1,0 +1,695 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Zach Taylor <zctaylor.work@gmail.com>
+Date: Thu, 26 Nov 2026 17:15:31 -0500
+Subject: [PATCH 04/30] ate-setup: k0s install profile for the stigenai fleet
+
+ATE_INSTALL_PROFILE picks the overlay a Kind-profile install renders
+(default kind). The k0s overlay layers over the kind manifests: it mounts
+the CSI plugin dir from /var/lib/k0s/kubelet, drops the kubelet image
+credential provider that k0s lacks, reads the S3 keys from the
+ate-s3-credentials Secret, mounts an optional ate-registry-auth Secret as
+DOCKER_CONFIG for private actor images, sizes the volumes for a real
+cluster, and sends telemetry to the fleet OTLP collector instead of a
+bundled one. Device plugins stay at /var/lib/kubelet because kubelet's
+DevicePluginPath is a constant.
+
+Fork-Topic: k0s
+Fork-Upstream: fork-only
+---
+ cmd/ate-setup/internal/config/config.go       |  12 ++
+ cmd/ate-setup/internal/config/load.go         |   1 +
+ cmd/ate-setup/internal/config/profile_test.go |  33 +++++
+ cmd/ate-setup/internal/config/setting.go      |   4 +
+ cmd/ate-setup/internal/steps/delete.go        |   2 +-
+ cmd/ate-setup/internal/steps/deploy.go        |   4 +-
+ cmd/ate-setup/internal/steps/overlay.go       |   4 +-
+ cmd/ate-setup/internal/steps/postgres.go      |   2 +-
+ cmd/ate-setup/internal/steps/profile_test.go  | 129 ++++++++++++++++++
+ .../k0s/ate-api-server/kustomization.yaml     |  43 ++++++
+ .../ate-install/k0s/ate-otel-config.yaml      |  29 ++++
+ .../ate-install/k0s/atelet/kustomization.yaml |  99 ++++++++++++++
+ manifests/ate-install/k0s/kustomization.yaml  |  38 ++++++
+ .../k0s/postgres/kustomization.yaml           |  30 ++++
+ .../ate-install/k0s/rustfs/kustomization.yaml |  73 ++++++++++
+ 15 files changed, 497 insertions(+), 6 deletions(-)
+ create mode 100644 cmd/ate-setup/internal/config/profile_test.go
+ create mode 100644 cmd/ate-setup/internal/steps/profile_test.go
+ create mode 100644 manifests/ate-install/k0s/ate-api-server/kustomization.yaml
+ create mode 100644 manifests/ate-install/k0s/ate-otel-config.yaml
+ create mode 100644 manifests/ate-install/k0s/atelet/kustomization.yaml
+ create mode 100644 manifests/ate-install/k0s/kustomization.yaml
+ create mode 100644 manifests/ate-install/k0s/postgres/kustomization.yaml
+ create mode 100644 manifests/ate-install/k0s/rustfs/kustomization.yaml
+
+diff --git a/cmd/ate-setup/internal/config/config.go b/cmd/ate-setup/internal/config/config.go
+index 30bcd18aa..1fd612b64 100644
+--- a/cmd/ate-setup/internal/config/config.go
++++ b/cmd/ate-setup/internal/config/config.go
+@@ -89,6 +89,10 @@ type Config struct {
+ 	// Kind selects the local Kind install profile (ATE_INSTALL_KIND).
+ 	Kind bool
+ 
++	// ProfileDir is the manifests/ate-install directory a Kind-profile install
++	// renders, from ATE_INSTALL_PROFILE.
++	ProfileDir string
++
+ 	// Namespace is the namespace the control plane is installed into, from
+ 	// ATE_NAMESPACE. It defaults to the canonical installdefaults.SystemNamespace,
+ 	// so an install that does not set it is unaffected. The checked-in manifests
+@@ -428,6 +432,14 @@ func (c *Config) WaitTimeout(historical time.Duration) time.Duration {
+ 	return historical
+ }
+ 
++// Profile is the overlay directory a Kind-profile install renders.
++func (c *Config) Profile() string {
++	if c.ProfileDir == "" {
++		return "kind"
++	}
++	return c.ProfileDir
++}
++
+ // Manifest resolves a path under manifests/ate-install.
+ func (c *Config) Manifest(parts ...string) string {
+ 	return filepath.Join(append([]string{c.Root, "manifests", "ate-install"}, parts...)...)
+diff --git a/cmd/ate-setup/internal/config/load.go b/cmd/ate-setup/internal/config/load.go
+index c9410fab3..2ebcaf25b 100644
+--- a/cmd/ate-setup/internal/config/load.go
++++ b/cmd/ate-setup/internal/config/load.go
+@@ -215,6 +215,7 @@ func buildConfig(root string, env map[string]string, r *Resolved) (*Config, erro
+ 	cfg := &Config{
+ 		Root:              root,
+ 		Kind:              r.Bool("kindCluster.enabled"),
++		ProfileDir:        r.String("kindCluster.profile"),
+ 		Namespace:         r.String("namespace"),
+ 		Kubeconfig:        kubeconfig,
+ 		Context:           r.String("context"),
+diff --git a/cmd/ate-setup/internal/config/profile_test.go b/cmd/ate-setup/internal/config/profile_test.go
+new file mode 100644
+index 000000000..a2182e536
+--- /dev/null
++++ b/cmd/ate-setup/internal/config/profile_test.go
+@@ -0,0 +1,33 @@
++// Copyright 2026 The Agent Substrate Authors
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//      http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package config
++
++import "testing"
++
++func TestProfile(t *testing.T) {
++	if got := (&Config{}).Profile(); got != "kind" {
++		t.Errorf("Profile() = %q, want kind", got)
++	}
++	loadEnv(t)
++	t.Setenv("ATE_INSTALL_KIND", "true")
++	t.Setenv("ATE_INSTALL_PROFILE", "k0s")
++	cfg, err := Load(Options{})
++	if err != nil {
++		t.Fatalf("Load() error = %v", err)
++	}
++	if got := cfg.Profile(); got != "k0s" {
++		t.Errorf("Profile() = %q, want k0s", got)
++	}
++}
+diff --git a/cmd/ate-setup/internal/config/setting.go b/cmd/ate-setup/internal/config/setting.go
+index cb3dfd15c..a32c86764 100644
+--- a/cmd/ate-setup/internal/config/setting.go
++++ b/cmd/ate-setup/internal/config/setting.go
+@@ -82,6 +82,10 @@ var Registry = []Setting{
+ 		Key: "kindCluster.name", Env: "KIND_CLUSTER_NAME", Flag: "kind-cluster-name", Kind: KindString, Default: "kind",
+ 		Usage: "Name of the Kind cluster to target",
+ 	},
++	{
++		Key: "kindCluster.profile", Env: "ATE_INSTALL_PROFILE", Flag: "kind-profile", Kind: KindString, Default: "kind",
++		Usage: "Directory under manifests/ate-install that a Kind-profile install renders",
++	},
+ 	{
+ 		Key: "namespace", Env: "ATE_NAMESPACE", Flag: "namespace", Kind: KindString,
+ 		Default: installdefaults.SystemNamespace,
+diff --git a/cmd/ate-setup/internal/steps/delete.go b/cmd/ate-setup/internal/steps/delete.go
+index 3e52e7ec7..63dbf0626 100644
+--- a/cmd/ate-setup/internal/steps/delete.go
++++ b/cmd/ate-setup/internal/steps/delete.go
+@@ -49,7 +49,7 @@ func (e *Env) DeleteAteSystem(ctx context.Context) error {
+ 	}
+ 
+ 	if e.Cfg.Kind {
+-		manifest, err := e.Kustomize(installDir + "/kind")
++		manifest, err := e.Kustomize(installDir + "/" + e.Cfg.Profile())
+ 		if err != nil {
+ 			return err
+ 		}
+diff --git a/cmd/ate-setup/internal/steps/deploy.go b/cmd/ate-setup/internal/steps/deploy.go
+index b1f9c4fe7..f03fb4999 100644
+--- a/cmd/ate-setup/internal/steps/deploy.go
++++ b/cmd/ate-setup/internal/steps/deploy.go
+@@ -373,7 +373,7 @@ func (e *Env) DeployAteAPIServer(ctx context.Context) error {
+ // apiServerManifestPath is the ate-api-server manifest for the environment.
+ func (e *Env) apiServerManifestPath() string {
+ 	if e.Cfg.Kind {
+-		return e.Cfg.Manifest("kind", "ate-api-server")
++		return e.Cfg.Manifest(e.Cfg.Profile(), "ate-api-server")
+ 	}
+ 	return e.Cfg.Manifest("ate-api-server.yaml")
+ }
+@@ -543,7 +543,7 @@ func (e *Env) DeployAtelet(ctx context.Context) error {
+ // ateletManifestPath is the atelet manifest for the environment.
+ func (e *Env) ateletManifestPath() string {
+ 	if e.Cfg.Kind {
+-		return e.Cfg.Manifest("kind", "atelet")
++		return e.Cfg.Manifest(e.Cfg.Profile(), "atelet")
+ 	}
+ 	return e.Cfg.Manifest("atelet.yaml")
+ }
+diff --git a/cmd/ate-setup/internal/steps/overlay.go b/cmd/ate-setup/internal/steps/overlay.go
+index 2fbaf8ca6..a1a124c58 100644
+--- a/cmd/ate-setup/internal/steps/overlay.go
++++ b/cmd/ate-setup/internal/steps/overlay.go
+@@ -92,7 +92,7 @@ func SystemOverlay(cfg *config.Config) string {
+ 	case cfg.Router == config.RouterAgentgateway:
+ 		return installDir + "/agentgateway"
+ 	case cfg.Kind:
+-		return installDir + "/kind"
++		return installDir + "/" + cfg.Profile()
+ 	default:
+ 		return installDir + "/base"
+ 	}
+@@ -592,7 +592,7 @@ func (e *Env) applyAtenetEgress(ctx context.Context, providers []config.Credenti
+ // overwrite it with the GKE endpoint and break telemetry everywhere at once.
+ func (e *Env) otelConfigPath() string {
+ 	if e.Cfg.Kind {
+-		return e.Cfg.Manifest("kind", "ate-otel-config.yaml")
++		return e.Cfg.Manifest(e.Cfg.Profile(), "ate-otel-config.yaml")
+ 	}
+ 	return e.Cfg.Manifest("ate-otel-config.yaml")
+ }
+diff --git a/cmd/ate-setup/internal/steps/postgres.go b/cmd/ate-setup/internal/steps/postgres.go
+index 8e529cc0f..6a565de17 100644
+--- a/cmd/ate-setup/internal/steps/postgres.go
++++ b/cmd/ate-setup/internal/steps/postgres.go
+@@ -156,7 +156,7 @@ func (e *Env) deployPostgres(ctx context.Context, plan postgresPlan) error {
+ // for a real node.
+ func (e *Env) postgresManifestPath() string {
+ 	if e.Cfg.Kind {
+-		return e.Cfg.Manifest("kind", "postgres")
++		return e.Cfg.Manifest(e.Cfg.Profile(), "postgres")
+ 	}
+ 	return e.Cfg.Manifest("postgres", "postgres.yaml")
+ }
+diff --git a/cmd/ate-setup/internal/steps/profile_test.go b/cmd/ate-setup/internal/steps/profile_test.go
+new file mode 100644
+index 000000000..9e85a9b85
+--- /dev/null
++++ b/cmd/ate-setup/internal/steps/profile_test.go
+@@ -0,0 +1,129 @@
++// Copyright 2026 The Agent Substrate Authors
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//      http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package steps
++
++import (
++	"strings"
++	"testing"
++
++	"go.ate.dev/substrate/cmd/ate-setup/internal/config"
++)
++
++// A Kind-profile install renders the overlay ATE_INSTALL_PROFILE names, for the
++// bundle and for every single-component redeploy.
++func TestProfileSelectsTheOverlay(t *testing.T) {
++	e := &Env{Cfg: &config.Config{
++		Root: "/repo", Kind: true, ProfileDir: "k0s", Router: config.RouterEnvoy,
++	}}
++	for name, got := range map[string]string{
++		"bundle":     SystemOverlay(e.Cfg),
++		"atelet":     e.ateletManifestPath(),
++		"api server": e.apiServerManifestPath(),
++		"postgres":   e.postgresManifestPath(),
++		"otel":       e.otelConfigPath(),
++	} {
++		if !strings.Contains(got, "/k0s") {
++			t.Errorf("%s path = %q, want it under the k0s profile", name, got)
++		}
++	}
++}
++
++// The k0s profile keeps the kubelet root at /var/lib/k0s/kubelet but not the
++// device plugin socket, drops the node credential provider that k0s lacks, and
++// reads the S3 keys from a Secret.
++func TestRenderK0sAtelet(t *testing.T) {
++	cfg := &config.Config{Root: repoRoot(t), Kind: true, ProfileDir: "k0s"}
++	e := &Env{Cfg: cfg}
++	rendered, err := e.render(e.ateletManifestPath())
++	if err != nil {
++		t.Fatalf("render: %v", err)
++	}
++	daemonSets, _ := dataPlaneWorkloads(t, rendered)
++	ds, ok := daemonSets["atelet"]
++	if !ok {
++		t.Fatal("rendered manifest has no DaemonSet atelet")
++	}
++	pod := ds.Spec.Template.Spec
++
++	hostPaths := map[string]string{}
++	for _, v := range pod.Volumes {
++		if v.HostPath != nil {
++			hostPaths[v.Name] = v.HostPath.Path
++		}
++		if strings.HasPrefix(v.Name, "image-credential-provider") {
++			t.Errorf("volume %s survived; k0s has no kubelet credential provider", v.Name)
++		}
++	}
++	if got, want := hostPaths["kubelet-plugins"], "/var/lib/k0s/kubelet/plugins"; got != want {
++		t.Errorf("kubelet-plugins hostPath = %q, want %q", got, want)
++	}
++	if got, want := hostPaths["device-plugins"], "/var/lib/kubelet/device-plugins"; got != want {
++		t.Errorf("device-plugins hostPath = %q, want %q", got, want)
++	}
++
++	var atelet, plugin bool
++	for _, c := range pod.Containers {
++		if c.Name != "atelet" {
++			continue
++		}
++		atelet = true
++		for _, a := range c.Args {
++			if strings.HasPrefix(a, "--image-credential-provider") {
++				t.Errorf("atelet keeps %s", a)
++			}
++		}
++		for _, m := range c.VolumeMounts {
++			if strings.HasPrefix(m.Name, "image-credential-provider") {
++				t.Errorf("atelet keeps mount %s", m.Name)
++			}
++		}
++	}
++	for _, c := range pod.InitContainers {
++		if c.Name != "objectstore-plugin" {
++			continue
++		}
++		plugin = true
++		for _, env := range c.Env {
++			if env.Name == "AWS_ACCESS_KEY_ID" && (env.ValueFrom == nil || env.ValueFrom.SecretKeyRef == nil) {
++				t.Error("objectstore-plugin reads AWS_ACCESS_KEY_ID from a literal, want the ate-s3-credentials Secret")
++			}
++		}
++	}
++	if !atelet || !plugin {
++		t.Errorf("atelet container present = %v, objectstore-plugin present = %v", atelet, plugin)
++	}
++}
++
++// The bundle must render, and must not bring the bundled collector or
++// prometheus that the fleet already runs.
++func TestRenderK0sBundle(t *testing.T) {
++	cfg := &config.Config{Root: repoRoot(t), Kind: true, ProfileDir: "k0s", Router: config.RouterEnvoy}
++	e := &Env{Cfg: cfg}
++	rendered, err := e.render(cfg.Path(SystemOverlay(cfg)))
++	if err != nil {
++		t.Fatalf("render: %v", err)
++	}
++	_, deployments := dataPlaneWorkloads(t, rendered)
++	for _, name := range []string{"ate-api-server", "ate-controller", "rustfs"} {
++		if _, ok := deployments[name]; !ok {
++			t.Errorf("bundle has no Deployment %s", name)
++		}
++	}
++	for _, name := range []string{"opentelemetry-collector", "prometheus"} {
++		if _, ok := deployments[name]; ok {
++			t.Errorf("bundle has Deployment %s, which the fleet provides", name)
++		}
++	}
++}
+diff --git a/manifests/ate-install/k0s/ate-api-server/kustomization.yaml b/manifests/ate-install/k0s/ate-api-server/kustomization.yaml
+new file mode 100644
+index 000000000..1f65c8930
+--- /dev/null
++++ b/manifests/ate-install/k0s/ate-api-server/kustomization.yaml
+@@ -0,0 +1,43 @@
++# Copyright 2026 The Agent Substrate Authors
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++apiVersion: kustomize.config.k8s.io/v1beta1
++kind: Kustomization
++
++# ../../kind/ate-api-server with the S3 keys read from the ate-s3-credentials
++# Secret instead of the rustfsadmin default.
++resources:
++  - ../../kind/ate-api-server
++
++patches:
++  - patch: |-
++      apiVersion: apps/v1
++      kind: Deployment
++      metadata:
++        name: ate-api-server
++        namespace: ate-system
++      spec:
++        template:
++          spec:
++            initContainers:
++            - name: objectstore-plugin
++              env:
++              - name: AWS_ACCESS_KEY_ID
++                value: null
++                valueFrom:
++                  secretKeyRef: {name: ate-s3-credentials, key: AWS_ACCESS_KEY_ID}
++              - name: AWS_SECRET_ACCESS_KEY
++                value: null
++                valueFrom:
++                  secretKeyRef: {name: ate-s3-credentials, key: AWS_SECRET_ACCESS_KEY}
+diff --git a/manifests/ate-install/k0s/ate-otel-config.yaml b/manifests/ate-install/k0s/ate-otel-config.yaml
+new file mode 100644
+index 000000000..234cab88f
+--- /dev/null
++++ b/manifests/ate-install/k0s/ate-otel-config.yaml
+@@ -0,0 +1,29 @@
++# Copyright 2026 The Agent Substrate Authors
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++# stigenai k0s profile: the fleet already runs an OTLP collector
++# (monitoring/otel-collector, fan-out to Tempo/Prometheus/Loki), so control
++# plane telemetry goes there instead of to a bundled collector. Same name as
++# ../ate-otel-config.yaml, so every component's envFrom resolves to it.
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: ate-otel-config
++  namespace: ate-system
++data:
++  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector.monitoring.svc:4317
++  OTEL_METRIC_EXPORT_INTERVAL: "10000"
++  OTEL_METRIC_EXPORT_TIMEOUT: "10000"
++  OTEL_LOGS_EXPORTER: otlp
++  ATE_WORKER_OTEL_LOGS_EXPORTER: otlp
+diff --git a/manifests/ate-install/k0s/atelet/kustomization.yaml b/manifests/ate-install/k0s/atelet/kustomization.yaml
+new file mode 100644
+index 000000000..04d34fe9b
+--- /dev/null
++++ b/manifests/ate-install/k0s/atelet/kustomization.yaml
+@@ -0,0 +1,99 @@
++# Copyright 2026 The Agent Substrate Authors
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++apiVersion: kustomize.config.k8s.io/v1beta1
++kind: Kustomization
++
++# Plain ../../atelet.yaml, unlike ../../kind/atelet: k0s keeps the kubelet under
++# /var/lib/k0s/kubelet, so CSI plugin sockets live there (the container-side
++# mount path is unchanged). Device plugins do not move: kubelet's
++# DevicePluginPath is a constant, /var/lib/kubelet/device-plugins.
++#
++# There is no kubelet image credential provider on the node, so its flags and
++# host mounts go. The mounted ate-registry-auth Secret authenticates private
++# registries instead; atelet reads $DOCKER_CONFIG/config.json when it has no
++# credential provider. Optional, so a cluster without the Secret still pulls
++# public images anonymously.
++resources:
++  - ../../atelet.yaml
++
++patches:
++  - patch: |-
++      apiVersion: apps/v1
++      kind: DaemonSet
++      metadata:
++        name: atelet
++        namespace: ate-system
++      spec:
++        template:
++          spec:
++            initContainers:
++            - name: objectstore-plugin
++              env:
++              - name: ATE_STORAGE_BACKEND
++                value: s3
++              - name: AWS_REGION
++                value: us-east-1
++              - name: AWS_ENDPOINT_URL
++                value: http://rustfs.ate-system.svc:9000
++              - name: AWS_S3_USE_PATH_STYLE
++                value: "true"
++              - name: AWS_ACCESS_KEY_ID
++                valueFrom:
++                  secretKeyRef: {name: ate-s3-credentials, key: AWS_ACCESS_KEY_ID}
++              - name: AWS_SECRET_ACCESS_KEY
++                valueFrom:
++                  secretKeyRef: {name: ate-s3-credentials, key: AWS_SECRET_ACCESS_KEY}
++            containers:
++            - name: atelet
++              env:
++              - name: DOCKER_CONFIG
++                value: /run/registry-auth
++              volumeMounts:
++              - name: registry-auth
++                mountPath: /run/registry-auth
++                readOnly: true
++              - mountPath: /run/image-credential-provider/bin
++                $patch: delete
++              - mountPath: /run/image-credential-provider/config.yaml
++                $patch: delete
++            volumes:
++            - name: registry-auth
++              secret:
++                secretName: ate-registry-auth
++                optional: true
++                items:
++                - key: .dockerconfigjson
++                  path: config.json
++            - name: image-credential-provider-bin
++              $patch: delete
++            - name: image-credential-provider-config
++              $patch: delete
++            - name: kubelet-plugins
++              hostPath:
++                path: /var/lib/k0s/kubelet/plugins
++  - target:
++      kind: DaemonSet
++      name: atelet
++    patch: |-
++      - op: test
++        path: /spec/template/spec/containers/0/args/0
++        value: --image-credential-provider-config=/run/image-credential-provider/config.yaml
++      - op: remove
++        path: /spec/template/spec/containers/0/args/0
++      - op: test
++        path: /spec/template/spec/containers/0/args/0
++        value: --image-credential-provider-bin-dir=/run/image-credential-provider/bin
++      - op: remove
++        path: /spec/template/spec/containers/0/args/0
+diff --git a/manifests/ate-install/k0s/kustomization.yaml b/manifests/ate-install/k0s/kustomization.yaml
+new file mode 100644
+index 000000000..45512a00b
+--- /dev/null
++++ b/manifests/ate-install/k0s/kustomization.yaml
+@@ -0,0 +1,38 @@
++# Copyright 2026 The Agent Substrate Authors
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++apiVersion: kustomize.config.k8s.io/v1beta1
++kind: Kustomization
++
++# stigenai k0s profile (ATE_INSTALL_PROFILE=k0s, with ATE_INSTALL_KIND=true):
++# a self-managed k0s cluster. Like ../kind it keeps snapshots in an in-cluster
++# rustfs and runs the bundled postgres, but it has a real kubelet root
++# (/var/lib/k0s/kubelet), real storage, and the fleet's own OTLP collector, so
++# the bundled otel-collector and prometheus are left out.
++#
++# The S3 keys are NOT in git: create the ate-s3-credentials Secret (keys
++# AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY) in ate-system before install.
++# Private actor images: an ate-registry-auth dockerconfigjson Secret in
++# ate-system lets atelet pull them; kubelet pulls (control plane, worker pods)
++# still need imagePullSecrets on the namespaces' service accounts.
++# pod-certificate-controller.yaml is absent for the same reason as in ../kind.
++resources:
++  - ./ate-api-server
++  - ../ate-idp-server.yaml
++  - ../ate-controller.yaml
++  - ./atelet
++  - ../atenet-router.yaml
++  - ../ate-system-networkpolicies.yaml
++  - ate-otel-config.yaml
++  - ./rustfs
+diff --git a/manifests/ate-install/k0s/postgres/kustomization.yaml b/manifests/ate-install/k0s/postgres/kustomization.yaml
+new file mode 100644
+index 000000000..6cd44e6f3
+--- /dev/null
++++ b/manifests/ate-install/k0s/postgres/kustomization.yaml
+@@ -0,0 +1,30 @@
++# Copyright 2026 The Agent Substrate Authors
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++apiVersion: kustomize.config.k8s.io/v1beta1
++kind: Kustomization
++
++resources:
++  - ../../postgres/postgres.yaml
++
++# The base claims 500Gi, sized for a dedicated node; one fleet needs far less.
++patches:
++  - target:
++      kind: StatefulSet
++      name: postgres
++      namespace: ate-system
++    patch: |-
++      - op: replace
++        path: /spec/volumeClaimTemplates/0/spec/resources/requests/storage
++        value: 20Gi
+diff --git a/manifests/ate-install/k0s/rustfs/kustomization.yaml b/manifests/ate-install/k0s/rustfs/kustomization.yaml
+new file mode 100644
+index 000000000..b4fe04653
+--- /dev/null
++++ b/manifests/ate-install/k0s/rustfs/kustomization.yaml
+@@ -0,0 +1,73 @@
++# Copyright 2026 The Agent Substrate Authors
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++apiVersion: kustomize.config.k8s.io/v1beta1
++kind: Kustomization
++
++# ../../kind/rustfs.yaml with a 50Gi volume and the keys read from the
++# ate-s3-credentials Secret instead of the rustfsadmin default.
++resources:
++  - ../../kind/rustfs.yaml
++
++patches:
++  - patch: |-
++      apiVersion: v1
++      kind: PersistentVolumeClaim
++      metadata:
++        name: rustfs-data
++        namespace: ate-system
++      spec:
++        resources:
++          requests:
++            storage: 50Gi
++  - patch: |-
++      apiVersion: apps/v1
++      kind: Deployment
++      metadata:
++        name: rustfs
++        namespace: ate-system
++      spec:
++        template:
++          spec:
++            containers:
++            - name: rustfs
++              env:
++              - name: RUSTFS_ACCESS_KEY
++                value: null
++                valueFrom:
++                  secretKeyRef: {name: ate-s3-credentials, key: AWS_ACCESS_KEY_ID}
++              - name: RUSTFS_SECRET_KEY
++                value: null
++                valueFrom:
++                  secretKeyRef: {name: ate-s3-credentials, key: AWS_SECRET_ACCESS_KEY}
++  - patch: |-
++      apiVersion: batch/v1
++      kind: Job
++      metadata:
++        name: rustfs-bucket-init
++        namespace: ate-system
++      spec:
++        template:
++          spec:
++            containers:
++            - name: create-bucket
++              env:
++              - name: AWS_ACCESS_KEY_ID
++                value: null
++                valueFrom:
++                  secretKeyRef: {name: ate-s3-credentials, key: AWS_ACCESS_KEY_ID}
++              - name: AWS_SECRET_ACCESS_KEY
++                value: null
++                valueFrom:
++                  secretKeyRef: {name: ate-s3-credentials, key: AWS_SECRET_ACCESS_KEY}
+-- 
+2.54.0
+

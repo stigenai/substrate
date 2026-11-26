@@ -1,0 +1,450 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Zach Taylor <zctaylor.work@gmail.com>
+Date: Thu, 26 Nov 2026 17:12:00 -0500
+Subject: [PATCH 03/30] Keep the fork as a patch stack on upstream release tags
+
+The fork fell 765 commits behind upstream while it merged on its own
+schedule. A linear stack on a release tag rebases with rerere, shows each
+change with range-diff, and drops a commit when upstream takes it.
+
+FORK.md gives the workflow and the patch register. hack/fork/fork.sh
+prints the base and the series, checks the trailers, exports the stack
+as patch files and replays it onto a new tag. The constitution now
+requires the stack and the v1.0 check commands.
+
+Fork-Topic: fork-meta
+Fork-Upstream: fork-only
+---
+ .specify/memory/constitution.md |  19 +--
+ FORK.md                         | 274 ++++++++++++++++++++++++++++++++
+ hack/fork/fork.sh               |  77 +++++++++
+ 3 files changed, 361 insertions(+), 9 deletions(-)
+ create mode 100644 FORK.md
+ create mode 100755 hack/fork/fork.sh
+
+diff --git a/.specify/memory/constitution.md b/.specify/memory/constitution.md
+index 68c91efd2..a7116d71f 100644
+--- a/.specify/memory/constitution.md
++++ b/.specify/memory/constitution.md
+@@ -1,7 +1,7 @@
+ <!--
+ Sync Impact Report
+-Version: (none) → 1.0.0
+-Added: all principles and sections. This is the first ratification.
++Version: 1.0.0 → 2.0.0
++Changed: Principles I and VI. The fork is now a patch stack on an upstream release tag (`stigenai/main`), not a weekly merge of `upstream/main`. Checks use the v1.0 commands, because upstream removed the Makefile.
+ Templates: there are no files in .specify/templates/* at this time. Run `specify init --here --ai claude` to add them.
+ -->
+ 
+@@ -16,7 +16,8 @@ This constitution adds the rules for the fork. If the two rules are different, u
+ 
+ ### I. Upstream Compatibility First
+ 
+-- `main` MUST stay a fast-forward or clean merge of `upstream/main` plus a small set of fork patches.
++- `stigenai/main` MUST be an upstream release tag plus a linear stack of fork commits. `FORK.md` gives the workflow.
++- Each fork commit MUST have the `Fork-Topic` and `Fork-Upstream` trailers. `hack/fork/fork.sh check` MUST pass.
+ - Each fork patch MUST touch the minimum number of upstream files.
+ - Do not reformat, rename or move upstream code in a fork patch. This causes merge conflicts and gives no value.
+ - Use an extension point if there is one. Do not add a fork-only flag, proto field or config key to an upstream type.
+@@ -28,15 +29,15 @@ This constitution adds the rules for the fork. If the two rules are different, u
+ Use the first alternative that works:
+ 
+ 1. **No fork change:** use configuration, manifests or a public API.
+-2. **Integration repository:** if the code runs *on* Substrate, put it in a different repository (see `docs/integration-repos.md`).
+-3. **Plugin:** put it in `internal/plugins/<name>` with its own `go.mod`, and let it import only `pkg/` (see `internal/plugins/README.md`).
++2. **Integration repository:** if the code runs *on* Substrate, put it in a different repository (see `docs/project/integration-repos.md`).
++3. **Plugin:** implement an upstream plugin API, such as `api/credprovider` or `api/objectstore`, in its own repository (see "Plugins" in `docs/dev/code-layout.md`).
+ 4. **New file in the fork:** add new files and do not edit upstream files.
+ 5. **Edit an upstream file:** use this rung only if rungs 1 to 4 cannot work. Keep the edit small and record it in `FORK.md`.
+ 
+ ### III. Upstream Small Changes
+ 
+ - If a change is small, general and useful to upstream users, write it so we can donate it.
+-- A change we can donate MUST follow all upstream rules. These rules cover tests, `make verify`, copyright headers, US spelling, no back-compat code and no issue references in commit messages.
++- A change we can donate MUST follow all upstream rules. These rules cover tests, `hack/verify-all.sh`, copyright headers, US spelling, no back-compat code and no issue references in commit messages.
+ 
+ - A change we can donate MUST NOT contain stigenai names, internal hostnames, credentials, customer data or fork-only paths.
+ - Keep each change we can donate in its own commit or branch, so it goes upstream without other fork work.
+@@ -66,8 +67,8 @@ A human MUST do these steps:
+ 
+ ### VI. Sync Often
+ 
+-- Merge `upstream/main` into `main` at least one time each week.
+-- After each sync, `make build`, `make test` and `make verify` MUST pass. Do not merge more fork work until they pass.
++- Rebase the stack onto each new upstream release tag with `hack/fork/fork.sh rebase <tag>`. Do not merge upstream into `stigenai/main`.
++- After each rebase, `go build ./...`, `go test -race ./...` and `hack/verify-all.sh` MUST pass. Do not add more fork work until they pass.
+ - If a fork patch conflicts on two or more syncs, examine it again. Then move it to a plugin, donate it, or delete it.
+ 
+ ## Development Workflow
+@@ -84,4 +85,4 @@ A human MUST do these steps:
+ - To change this constitution, edit this file in a PR, update the version and give the reason.
+ - Versions use semver: MAJOR removes or redefines a principle, MINOR adds a principle or section, PATCH makes the text clearer.
+ 
+-**Version**: 1.0.0 | **Ratified**: 2026-11-07 | **Last Amended**: 2026-11-07
++**Version**: 2.0.0 | **Ratified**: 2026-11-07 | **Last Amended**: 2026-11-26
+diff --git a/FORK.md b/FORK.md
+new file mode 100644
+index 000000000..b19f8c32e
+--- /dev/null
++++ b/FORK.md
+@@ -0,0 +1,274 @@
++# The stigenai fork
++
++This repository is a fork of
++[agent-substrate/substrate](https://github.com/agent-substrate/substrate).
++We keep our changes as a **patch stack**. A patch stack is an upstream
++release tag, with a linear series of our commits on top of it.
++
++| Item | Value |
++|---|---|
++| Fork branch | `stigenai/main` |
++| Base | An upstream release tag. `hack/fork/fork.sh base` prints it. |
++| Upstream remote | `upstream` = `ssh://git@github.com/agent-substrate/substrate` |
++| Fork release tags | `<base>-stigenai.<n>`, for example `v1.0.1-stigenai.1` |
++| Tools | `hack/fork/fork.sh` |
++
++## Rules for fork commits
++
++1. Each commit is one change with its tests. Put a Go test in the package
++   that it tests, in the same commit as the change.
++2. Each commit has two trailers. `hack/fork/fork.sh check` fails without them.
++
++   ```text
++   Fork-Topic: egress-paths
++   Fork-Upstream: candidate
++   ```
++
++   | `Fork-Upstream` | Meaning |
++   |---|---|
++   | `candidate` | General fix or feature. Send it upstream as a PR, then drop it here. |
++   | `fork-only` | stigenai-specific: our fleet, our deploy, our product. |
++   | `test-only` | A test that guards upstream behavior we depend on. |
++
++3. Keep the commits of one topic together in the stack.
++4. Add new files when you can. Change an upstream file only when you must.
++   A new file cannot cause a conflict on a rebase.
++5. Do not merge upstream into `stigenai/main`. Rebase the stack onto a new tag.
++
++To add the trailers to a commit:
++
++```bash
++git commit --amend --no-edit --trailer 'Fork-Topic: k0s' --trailer 'Fork-Upstream: fork-only'
++```
++
++## Show the stack
++
++```bash
++hack/fork/fork.sh base     # for example v1.0.1
++hack/fork/fork.sh series   # hash, topic, upstream status, subject
++hack/fork/fork.sh check
++```
++
++## Move to a new upstream release
++
++1. Get the new tags:
++
++   ```bash
++   git fetch upstream --tags
++   ```
++
++2. Make a branch for the rebase. Then run the command below to replay the
++   stack. The script turns on `rerere`. Git then records each conflict
++   resolution and uses it again.
++
++   ```bash
++   git switch -c stigenai/rebase-v1.0.2 stigenai/main
++   hack/fork/fork.sh rebase v1.0.2
++   ```
++
++3. If a commit conflicts, do these actions:
++   - Resolve the conflict.
++   - Run `git add`.
++   - Run `git rebase --continue`.
++
++   If upstream already has the change, run `git rebase --skip`.
++   If its tests pass on the upstream code, keep them in a `test-only` commit.
++4. If a commit changes a `.proto` file, run `hack/update/codegen.sh` after
++   you resolve it. Do not resolve conflicts in generated `.pb.go` files by
++   hand. If a commit changes `go.mod`, run `hack/update/go-modules.sh`.
++5. Compare the old and the new stack. The script prints the command:
++
++   ```bash
++   git range-diff v1.0.1..<old-head> v1.0.2..HEAD
++   ```
++
++6. Run the checks:
++
++   ```bash
++   go build ./... && go test -race ./... && hack/verify-all.sh
++   hack/fork/fork.sh check
++   ```
++
++7. Push `stigenai/rebase-v1.0.2` and open a PR to `stigenai/main` for review.
++   Put the `range-diff` output in the PR description. Do not merge the PR.
++   After the approval, force-push the rebased head to `stigenai/main`:
++
++   ```bash
++   git push --force-with-lease origin stigenai/rebase-v1.0.2:stigenai/main
++   git tag v1.0.2-stigenai.1 && git push origin v1.0.2-stigenai.1
++   ```
++
++## Review the stack as patch files
++
++```bash
++hack/fork/fork.sh export ../substrate-patches
++```
++
++This command writes one `.patch` file for each commit. It also writes a
++`series` file. The `series` file shows the topic and the upstream status of
++each patch. After each rebase, commit the export to the `stigenai/patches`
++branch. The history of that branch then shows how each patch changed from one
++base to the next.
++
++## Send a candidate upstream
++
++1. Make a branch from `upstream/main`. Then cherry-pick the topic commits on that branch.
++2. Remove the trailers. Then follow the upstream `CONTRIBUTING.md`.
++3. When upstream releases the change, the next rebase drops our commit.
++4. Set the register status below to `proposed <link>`, then to `merged`.
++
++## Patch register
++
++Principle V of `.specify/memory/constitution.md` requires this register. It
++lists each topic that edits upstream files. The status of each topic is
++`fork-only`, `candidate`, `test-only`, `proposed <link>` or `merged`.
++
++`hack/fork/fork.sh series` shows the commits of each topic. Topics that have only
++new files have no entry: `aws`, `static-worker` and `layerfs-e2e`.
++
++### fork-meta
++
++- **Status:** `fork-only`
++- **Upstream files:** `hack/util/verify-boilerplate.py` and
++  `hack/third_party/kubernetes/verify-shellcheck.sh`. Each skips `.specify/`.
++- **Reason:** `specify init` writes the Spec Kit files. They have no license
++  header, and their scripts fail shellcheck. A new `specify init` writes over
++  any header that we add.
++- **Remove when:** the fork stops using Spec Kit.
++
++### k0s
++
++- **Status:** `fork-only`
++- **Upstream files:** `cmd/ate-setup/internal/config/{config,load,setting}.go`,
++  `cmd/ate-setup/internal/steps/{delete,deploy,overlay,postgres}.go`,
++  `manifests/ate-install/atenet-egress.yaml` and
++  `cmd/ate-setup/internal/steps/egress_dns_test.go`.
++- **Reason:** `ate-setup` cannot select an install profile directory.
++  `ATE_INSTALL_PROFILE=k0s` and `ATE_INSTALL_PROFILE=aws` use this switch. The
++  fleet has no IPv6 egress, so the egress DNS cache uses `V4_PREFERRED`.
++  Upstream uses `ALL`.
++- **Remove when:** upstream adds a profile switch and a setting for the DNS
++  address family.
++
++### aws
++
++- **Status:** `fork-only`. It has new files only.
++- **Install:**
++
++  ```bash
++  ATE_INSTALL_PROFILE=aws go run ./cmd/ate-setup --kind deploy ate-system \
++    --image-repo REPO --image-tag TAG \
++    --storage-bucket-name BUCKET --snapshot-location s3://BUCKET/
++  kubectl apply -f manifests/ate-install/aws/sandboxconfig-gvisor.yaml
++  ```
++
++- **Values to edit before an install.** Each value has an `EDIT` mark:
++
++  | File | Value |
++  |---|---|
++  | `manifests/ate-install/aws/ate-api-server/kustomization.yaml` | Role ARN and region |
++  | `manifests/ate-install/aws/atelet/kustomization.yaml` | Role ARN and region |
++  | `manifests/ate-install/aws/sandboxconfig-gvisor.yaml` | S3 URI of the gVisor mirror |
++
++### devenv
++
++- **Status:** `fork-only`
++- **Upstream files:** `.gitignore`, `hack/protoc.sh` and
++  `hack/util/verify-boilerplate.py`, which skips `devenv.lock`.
++- **Reason:** the fleet builds in a cached devenv. `hack/protoc.sh` must stop
++  with an error when an HTTP error occurs. It must not save the error page.
++- **Remove when:** the fleet stops using devenv.
++
++### image-pull-keychain
++
++- **Status:** `candidate`
++- **Upstream files:** `cmd/atelet/main.go`
++- **Reason:** atelet pulls images with the GCP keychain only. A non-GCP fleet
++  needs the Docker config keychain.
++- **Remove when:** upstream merges it.
++
++### atelet-dialer
++
++- **Status:** `candidate`
++- **Upstream files:** `cmd/ateapi/internal/controlapi/dialer.go` and its tests.
++- **Reason:** the v1.0.1 dialer keeps the old connection open. This happens when
++  Kubernetes replaces the atelet pod, when the node has no atelet, or when the
++  atelet has no IP.
++- **Remove when:** upstream merges it.
++
++### microvm-fuse
++
++- **Status:** `candidate`
++- **Upstream files:** the WorkerPool API types and the generated deepcopy and
++  CRD, the WorkerPool controller, `cmd/ateworker-microvm`, `internal/ocispec`,
++  `docs/api-guide.md` and the e2e probe.
++- **Reason:** a microVM actor must mount a FUSE file system, for example
++  LayerFS. The guest has no `/dev/fuse`, and the actor cannot `mknod` it. The
++  operator uses `WorkerPool.spec.guestDevices` to turn on the device.
++- **Remove when:** upstream merges it, or adds a different device API for
++  microVM actors.
++
++### native-tls-gateway
++
++- **Status:** `fork-only`
++- **Upstream files:** `cmd/atenet/internal/router/{cmd,config,router}.go`,
++  `cmd/atenet/internal/router/egress/egress.go`,
++  `internal/egresspolicy/egresspolicy.go` and `.github/workflows/pr-workflow.yaml`.
++- **Reason:** the Fabriek native-TLS plane needs one fixed destination for each
++  gateway. The actor sees the certificate of the origin. The gateway also makes
++  sure that the actor UID in the certificate is the UID of the actor that runs.
++  It is an addition to the upstream `tls_passthrough`.
++- **Remove when:** upstream passthrough can pin one destination for each
++  gateway and need an identity that binds the actor UID.
++
++### egress-tls-pools
++
++- **Status:** `candidate`
++- **Upstream files:** `manifests/ate-install/atenet-egress.yaml` and
++  `egresspolicymanifest_test.go`.
++- **Reason:** Envoy offers a cached TLS session to a different SNI. Origins
++  behind Cloudflare then return 503. `max_session_keys: 0` on the two upstream
++  TLS clusters stops this.
++- **Remove when:** upstream sets `max_session_keys: 0`, or Envoy keys the
++  sessions by SNI.
++
++### egress-paths
++
++- **Status:** `candidate`
++- **Upstream files:** `api/ateapi/v1/ateapi.proto` and the generated code,
++  `cmd/ateapi/internal/apivalidation/egress_policy.go`,
++  `internal/egresspolicy/egresspolicy.go`,
++  `cmd/atenet/internal/router/egress/request.go`, `go.mod` and
++  `docs/guides/egress-credential-injection.md`.
++- **Reason:** two HTTPS rules for one host cannot inject different
++  credentials. `HTTPSRule` adds path prefixes and exact `paths`. The check
++  rejects paths that a server can decode to a different path.
++- **Rollout:** Do not create a policy that uses `paths` before every atenet
++  runs this commit. An older atenet ignores `paths`. The rule then applies to
++  all paths on the host.
++- **Remove when:** upstream merges it, or adds a path matcher that does the
++  same work.
++
++### fabriek-bootstrap
++
++- **Status:** `fork-only`
++- **Upstream files:** the activation and bootstrap fields in `ateapi`,
++  `ateletpb` and `ateworkerpb`; the issue path in `workflow_resume`,
++  `workerservice`, `ateletauth` and `actoridjwt`; atelet validation and the
++  snapshot exclusion.
++- **Reason:** upstream has no hook for an activation identity or a projected
++  token for each actor. The fields must be in the shared messages.
++- **Remove when:** upstream adds a bootstrap for protected workloads, or we
++  retire the Fabriek supervisor.
++
++### supervisor-termination
++
++- **Status:** `fork-only`
++- **Upstream files:** the Terminate response path through the workers, atelet
++  and the control plane; the delete workflow; `atepg` and migration
++  `000002_supervisor_termination.sql`; the `Control.ReadSupervisorTermination`
++  RPC and its authz rule; the cgroup stop.
++- **Reason:** delete and terminate are fixed steps in the core workflow. The
++  receipt must be written in the same transaction as the actor delete.
++- **Remove when:** upstream adds a verified stop or a deletion receipt, or we
++  stop using protected actors.
+diff --git a/hack/fork/fork.sh b/hack/fork/fork.sh
+new file mode 100755
+index 000000000..3ce77aec2
+--- /dev/null
++++ b/hack/fork/fork.sh
+@@ -0,0 +1,77 @@
++#!/usr/bin/env bash
++
++# Copyright 2026 The Agent Substrate Authors
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#      http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++set -o errexit -o nounset -o pipefail
++
++# Tools for the stigenai patch stack. FORK.md tells how to use them.
++#
++#   fork.sh base          Print the upstream tag that the stack sits on.
++#   fork.sh series        List the fork commits with their topic and status.
++#   fork.sh check         Fail if a fork commit has a missing or bad trailer.
++#   fork.sh export DIR    Write the stack to DIR as patches and a series file.
++#   fork.sh rebase TAG    Replay the stack onto the upstream tag TAG.
++
++die() { echo "fork.sh: $*" >&2; exit 1; }
++
++base() {
++  # Fork release tags (v1.0.1-stigenai.1) are on the stack, so skip them.
++  git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-stigenai*' HEAD
++}
++
++series() {
++  git log --reverse --no-merges \
++    --format='%h%x09%(trailers:key=Fork-Topic,valueonly,separator=%x2C)%x09%(trailers:key=Fork-Upstream,valueonly,separator=%x2C)%x09%s' \
++    "$(base)..HEAD"
++}
++
++check() {
++  local bad
++  bad=$(series | awk -F'\t' '$2 == "" || $3 !~ /^(candidate|fork-only|test-only)$/')
++  [[ -z "$bad" ]] || die "$(printf 'these commits need Fork-Topic and Fork-Upstream trailers:\n%s' "$bad")"
++}
++
++export_stack() {
++  local dir=${1:?usage: fork.sh export DIR}
++  # Only replace a directory that a previous export made.
++  [[ ! -e "$dir" || -f "$dir/series" ]] || die "$dir exists and has no series file"
++  rm -rf "$dir"
++  git format-patch --quiet --zero-commit -o "$dir" "$(base)..HEAD"
++  (cd "$dir" && printf '%s\n' *.patch) | paste - <(series | cut -f2-) >"$dir/series"
++  echo "base $(base): $(wc -l <"$dir/series" | tr -d ' ') patches in $dir"
++}
++
++rebase_stack() {
++  local new=${1:?usage: fork.sh rebase TAG} old head
++  git rev-parse -q --verify "refs/tags/$new" >/dev/null || die "no tag $new; run: git fetch upstream --tags"
++  old=$(base)
++  head=$(git rev-parse --short HEAD)
++  git config rerere.enabled true
++  git config rerere.autoupdate true
++  echo "After the rebase, review the stack with:"
++  echo "  git range-diff $old..$head $new..HEAD"
++  git rebase --onto "$new" "$old"
++}
++
++cmd=${1:-}
++shift || true
++case "$cmd" in
++  base) base ;;
++  series) series ;;
++  check) check ;;
++  export) export_stack "$@" ;;
++  rebase) rebase_stack "$@" ;;
++  *) die "usage: fork.sh base|series|check|export DIR|rebase TAG" ;;
++esac
+-- 
+2.54.0
+

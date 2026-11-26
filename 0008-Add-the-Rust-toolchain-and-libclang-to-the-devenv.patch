@@ -1,0 +1,104 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: claude-factory worker <factory-worker@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 03:13:33 +0000
+Subject: [PATCH 08/30] Add the Rust toolchain and libclang to the devenv
+
+So that make test-dynamic-modules runs in the devenv with the Rust version
+of the CI runner image. A pinned nixpkgs input gives rustc, cargo, clang 18
+and libclang. LIBCLANG_PATH and CLANG_PATH point at them. The cargo linker
+is the gcc wrapper of the same nixpkgs rev, because the bindgen build script
+loads libclang and needs the same glibc.
+
+Fork-Topic: devenv
+Fork-Upstream: fork-only
+---
+ devenv.lock | 18 ++++++++++++++++++
+ devenv.nix  | 15 +++++++++++++++
+ devenv.yaml |  2 ++
+ 3 files changed, 35 insertions(+)
+
+diff --git a/devenv.lock b/devenv.lock
+index a6f1bbd7d..0b1f24a1e 100644
+--- a/devenv.lock
++++ b/devenv.lock
+@@ -36,6 +36,23 @@
+         "url": "https://github.com/NixOS/nixpkgs"
+       }
+     },
++    "nixpkgs-rust": {
++      "locked": {
++        "lastModified": 1794042290,
++        "narHash": "sha256-ziZn2PvCJE5JEEpqTdxXwJpPB+L3YqoCpTAMCzyaP3U=",
++        "ref": "refs/heads/master",
++        "rev": "f4a03c008967841f2a0b3cb7c436fc6fc31671f6",
++        "shallow": true,
++        "type": "git",
++        "url": "https://github.com/NixOS/nixpkgs"
++      },
++      "original": {
++        "rev": "f4a03c008967841f2a0b3cb7c436fc6fc31671f6",
++        "shallow": true,
++        "type": "git",
++        "url": "https://github.com/NixOS/nixpkgs"
++      }
++    },
+     "nixpkgs-shellcheck": {
+       "locked": {
+         "lastModified": 1720535198,
+@@ -74,6 +91,7 @@
+       "inputs": {
+         "devenv": "devenv",
+         "nixpkgs": "nixpkgs",
++        "nixpkgs-rust": "nixpkgs-rust",
+         "nixpkgs-shellcheck": "nixpkgs-shellcheck",
+         "nixpkgs-unstable": "nixpkgs-unstable"
+       }
+diff --git a/devenv.nix b/devenv.nix
+index 449fa161f..349fdfe34 100644
+--- a/devenv.nix
++++ b/devenv.nix
+@@ -16,14 +16,29 @@
+ let
+   shellcheckPkgs = import inputs.nixpkgs-shellcheck { system = pkgs.stdenv.hostPlatform.system; };
+   unstablePkgs = import inputs.nixpkgs-unstable { system = pkgs.stdenv.hostPlatform.system; };
++  rustPkgs = import inputs.nixpkgs-rust { system = pkgs.stdenv.hostPlatform.system; };
+ in
+ {
++  # Rust links with the same glibc as libclang, which bindgen loads at build time.
++  # CLANG_PATH and the linker are set here because clang or its cc on PATH would shadow gcc for Go.
++  env = {
++    LIBCLANG_PATH = "${rustPkgs.llvmPackages_18.libclang.lib}/lib";
++    CLANG_PATH = "${rustPkgs.llvmPackages_18.clang}/bin/clang";
++    "CARGO_TARGET_${rustPkgs.stdenv.hostPlatform.rust.cargoEnvVarTarget}_LINKER" = "${rustPkgs.stdenv.cc}/bin/cc";
++  };
++
+   packages =
+     assert pkgs.go_1_27.version == "1.27.0";
+     assert pkgs.golangci-lint.version == "2.13.2";
+     assert shellcheckPkgs.shellcheck.version == "0.9.0";
+     assert unstablePkgs.weaver.version == "0.25.1";
++    assert rustPkgs.rustc.version == "1.99.1";
++    assert rustPkgs.cargo.version == "1.99.1";
++    assert rustPkgs.llvmPackages_18.clang.version == "18.1.8";
++    assert rustPkgs.llvmPackages_18.libclang.version == "18.1.8";
+     [
++      rustPkgs.cargo
++      rustPkgs.rustc
+       pkgs.go_1_27
+       pkgs.golangci-lint
+       pkgs.govulncheck
+diff --git a/devenv.yaml b/devenv.yaml
+index a3b753fb2..82e5963ea 100644
+--- a/devenv.yaml
++++ b/devenv.yaml
+@@ -19,5 +19,7 @@ inputs:
+     url: git+https://github.com/NixOS/nixpkgs?rev=205fd4226592cc83fd4c0885a3e4c9c400efabb5&shallow=1
+   nixpkgs-unstable:
+     url: git+https://github.com/NixOS/nixpkgs?rev=f9a75f41be3a74eab55d3a7679d34ad6cc0da977&shallow=1
++  nixpkgs-rust:
++    url: git+https://github.com/NixOS/nixpkgs?rev=f4a03c008967841f2a0b3cb7c436fc6fc31671f6&shallow=1
+   devenv:
+     url: git+https://github.com/cachix/devenv?dir=src/modules&ref=refs/tags/v2.4.0&shallow=1
+-- 
+2.54.0
+

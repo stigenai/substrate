@@ -1,0 +1,44 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Zach Taylor <zctaylor.work@gmail.com>
+Date: Thu, 26 Nov 2026 17:34:52 -0500
+Subject: [PATCH 24/30] Pin supervisor bootstrap log redaction in interceptor
+ coverage
+
+The server interceptor logs responses with debug_redact fields masked.
+This test fails if a MintSupervisorBootstrap token reaches the log or if
+masking changes the response sent to atelet.
+
+Fork-Topic: fabriek-bootstrap
+Fork-Upstream: fork-only
+---
+ .../ateinterceptors/ateinterceptors_test.go     | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/internal/ateinterceptors/ateinterceptors_test.go b/internal/ateinterceptors/ateinterceptors_test.go
+index c0a0c7e0b..26a4e714e 100644
+--- a/internal/ateinterceptors/ateinterceptors_test.go
++++ b/internal/ateinterceptors/ateinterceptors_test.go
+@@ -487,3 +487,20 @@ func TestServerUnaryInterceptorElidesListResponses(t *testing.T) {
+ 		t.Fatalf("interceptor mutated the response returned to the client")
+ 	}
+ }
++
++func TestServerUnaryInterceptorRedactsSupervisorBootstrap(t *testing.T) {
++	log := captureDefaultLog(t)
++	response := &ateapi.MintSupervisorBootstrapResponse{Token: "synthetic-bootstrap-secret"}
++	_, err := ServerUnaryInterceptor(context.Background(), &ateapi.MintSupervisorBootstrapRequest{}, &grpc.UnaryServerInfo{FullMethod: ateapi.WorkerService_MintSupervisorBootstrap_FullMethodName}, func(context.Context, interface{}) (interface{}, error) {
++		return response, nil
++	})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if strings.Contains(log.String(), response.Token) || !strings.Contains(log.String(), protoredact.Placeholder) {
++		t.Fatal("supervisor token log redaction failed")
++	}
++	if response.Token != "synthetic-bootstrap-secret" {
++		t.Fatal("client response mutated")
++	}
++}
+-- 
+2.54.0
+

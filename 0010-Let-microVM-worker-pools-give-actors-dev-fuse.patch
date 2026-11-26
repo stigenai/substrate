@@ -1,0 +1,1049 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Zach Taylor <zctaylor.work@gmail.com>
+Date: Thu, 26 Nov 2026 17:30:43 -0500
+Subject: [PATCH 10/30] Let microVM worker pools give actors /dev/fuse
+
+A microVM actor cannot mount a FUSE filesystem. The guest kernel has
+fuse and the actor can hold SYS_ADMIN, but the guest container has no
+/dev/fuse, the actor cannot mknod it, and the spec has no device field.
+
+Add guestDevices to a WorkerPool sandbox class, an allowlist that holds
+only "fuse". The CRD refuses it on any class but microvm. The controller
+passes it to ateworker-microvm as --guest-devices, only when set. The
+worker adds each node to linux.devices with a device cgroup allow rule
+after the default deny. The kata spec converter now forwards
+linux.devices, so the agent creates the node in the guest container's
+/dev. The guest kernel serves the device, so the actor gets no host
+device.
+
+An actor reaches such a pool through a pool label and the template's
+workerSelector, and it still needs SYS_ADMIN to mount.
+
+The e2e probe gets a /fuse endpoint that mounts a FUSE filesystem it
+serves itself. The guestdevices suite resumes an actor on a pool with and
+without guestDevices, and checks that the API server refuses the field
+on a gvisor class.
+
+Fork-Topic: microvm-fuse
+Fork-Upstream: candidate
+---
+ api/infra/k8s/ate/v1/workerpool_types.go      |  21 +++
+ .../k8s/ate/v1/workerpool_validation_test.go  |  20 +++
+ api/infra/k8s/ate/v1/zz_generated.deepcopy.go |   5 +
+ .../internal/controllers/workerpool_apply.go  |  18 ++
+ .../controllers/workerpool_apply_test.go      |  28 +++
+ .../internal/kata/specconv.go                 |  15 ++
+ .../internal/kata/specconv_linux_test.go      |  18 ++
+ cmd/ateworker-microvm/main.go                 |   9 +
+ cmd/ateworker-microvm/run.go                  |   2 +-
+ docs/reference/api-guide.md                   |  21 ++-
+ .../guestdevices-templates.yaml.tmpl          |  65 +++++++
+ .../guestdevices/guestdevices.yaml.tmpl       |  51 ++++++
+ internal/e2e/fixtures/probe/fuse_linux.go     | 164 ++++++++++++++++++
+ internal/e2e/fixtures/probe/fuse_other.go     |  23 +++
+ internal/e2e/fixtures/probe/main.go           |   1 +
+ .../suites/guestdevices/guestdevices_test.go  | 141 +++++++++++++++
+ .../e2e/suites/guestdevices/testmain_test.go  |  24 +++
+ internal/ocispec/microvm.go                   |  32 ++++
+ internal/ocispec/microvm_test.go              |  52 ++++++
+ .../generated/ate.dev_workerpools.yaml        |  20 +++
+ 20 files changed, 728 insertions(+), 2 deletions(-)
+ create mode 100644 internal/e2e/fixtures/guestdevices/guestdevices-templates.yaml.tmpl
+ create mode 100644 internal/e2e/fixtures/guestdevices/guestdevices.yaml.tmpl
+ create mode 100644 internal/e2e/fixtures/probe/fuse_linux.go
+ create mode 100644 internal/e2e/fixtures/probe/fuse_other.go
+ create mode 100644 internal/e2e/suites/guestdevices/guestdevices_test.go
+ create mode 100644 internal/e2e/suites/guestdevices/testmain_test.go
+
+diff --git a/api/infra/k8s/ate/v1/workerpool_types.go b/api/infra/k8s/ate/v1/workerpool_types.go
+index f619b389c..1fb8409a3 100644
+--- a/api/infra/k8s/ate/v1/workerpool_types.go
++++ b/api/infra/k8s/ate/v1/workerpool_types.go
+@@ -113,7 +113,17 @@ type WorkerPoolSpec struct {
+ 	SandboxClasses []WorkerPoolSandboxClass `json:"sandboxClasses,omitempty"`
+ }
+ 
++// GuestDevice names a device node from a fixed allowlist.
++//
++// +kubebuilder:validation:Enum=fuse
++type GuestDevice string
++
++// GuestDeviceFUSE is /dev/fuse (char 10:229).
++const GuestDeviceFUSE GuestDevice = "fuse"
++
+ // WorkerPoolSandboxClass is one sandbox runtime family a WorkerPool runs.
++//
++// +kubebuilder:validation:XValidation:rule="!has(self.guestDevices) || size(self.guestDevices) == 0 || self.name == 'microvm'",message="guestDevices requires the microvm sandbox class"
+ type WorkerPoolSandboxClass struct {
+ 	// name selects the sandbox runtime family, which drives the worker pod
+ 	// shape (KVM/vhost device mounts and node placement). The concrete binary
+@@ -132,6 +142,17 @@ type WorkerPoolSandboxClass struct {
+ 	//
+ 	// +optional
+ 	ConfigRef *SandboxConfigReference `json:"configRef,omitempty"`
++
++	// guestDevices names device nodes to create in each actor container on
++	// this pool, with a device cgroup rule that allows them. Only the microvm
++	// class accepts it: the node exists in the guest kernel, not on the host.
++	// An actor also needs the capabilities to use the device, for example
++	// SYS_ADMIN to mount a FUSE filesystem.
++	//
++	// +optional
++	// +listType=set
++	// +kubebuilder:validation:MaxItems=1
++	GuestDevices []GuestDevice `json:"guestDevices,omitempty"`
+ }
+ 
+ // SandboxConfigReference names a cluster-scoped SandboxConfig.
+diff --git a/api/infra/k8s/ate/v1/workerpool_validation_test.go b/api/infra/k8s/ate/v1/workerpool_validation_test.go
+index 9c4c6e8a6..717cf20d9 100644
+--- a/api/infra/k8s/ate/v1/workerpool_validation_test.go
++++ b/api/infra/k8s/ate/v1/workerpool_validation_test.go
+@@ -281,6 +281,26 @@ func TestWorkerPoolValidation(t *testing.T) {
+ 			wp.Spec.Template = gpuTemplate(corev1.ResourceList{gpuResourceName: resource.MustParse("1")}, nil)
+ 		},
+ 		wantErr: false,
++	}, {
++		name: "fuse guest device on a microvm class",
++		mutate: func(wp *WorkerPool) {
++			wp.Spec.SandboxClasses = []WorkerPoolSandboxClass{{Name: SandboxClassMicroVM, GuestDevices: []GuestDevice{GuestDeviceFUSE}}}
++		},
++		wantErr: false,
++	}, {
++		name: "guest device on a gvisor class",
++		mutate: func(wp *WorkerPool) {
++			wp.Spec.SandboxClasses = []WorkerPoolSandboxClass{{Name: SandboxClassGvisor, GuestDevices: []GuestDevice{GuestDeviceFUSE}}}
++		},
++		wantErr: true,
++		errMsg:  "guestDevices requires the microvm sandbox class",
++	}, {
++		name: "guest device not in the allowlist",
++		mutate: func(wp *WorkerPool) {
++			wp.Spec.SandboxClasses = []WorkerPoolSandboxClass{{Name: SandboxClassMicroVM, GuestDevices: []GuestDevice{"kvm"}}}
++		},
++		wantErr: true,
++		errMsg:  "spec.sandboxClasses[0].guestDevices[0]: Unsupported value",
+ 	}}
+ 
+ 	for _, tt := range tests {
+diff --git a/api/infra/k8s/ate/v1/zz_generated.deepcopy.go b/api/infra/k8s/ate/v1/zz_generated.deepcopy.go
+index 7c768dfe5..68097efc4 100644
+--- a/api/infra/k8s/ate/v1/zz_generated.deepcopy.go
++++ b/api/infra/k8s/ate/v1/zz_generated.deepcopy.go
+@@ -390,6 +390,11 @@ func (in *WorkerPoolSandboxClass) DeepCopyInto(out *WorkerPoolSandboxClass) {
+ 		*out = new(SandboxConfigReference)
+ 		**out = **in
+ 	}
++	if in.GuestDevices != nil {
++		in, out := &in.GuestDevices, &out.GuestDevices
++		*out = make([]GuestDevice, len(*in))
++		copy(*out, *in)
++	}
+ }
+ 
+ // DeepCopy is an autogenerated deepcopy function, copying the receiver, creating a new WorkerPoolSandboxClass.
+diff --git a/cmd/atecontroller/internal/controllers/workerpool_apply.go b/cmd/atecontroller/internal/controllers/workerpool_apply.go
+index 1244d6498..3ff079c7d 100644
+--- a/cmd/atecontroller/internal/controllers/workerpool_apply.go
++++ b/cmd/atecontroller/internal/controllers/workerpool_apply.go
+@@ -93,6 +93,17 @@ type workerOTelSettings struct {
+ 	MetricsExporter string
+ }
+ 
++// guestDevices returns the device names the pool's sandbox classes ask for.
++func guestDevices(wp *atev1.WorkerPool) []string {
++	var names []string
++	for _, c := range wp.Spec.SandboxClasses {
++		for _, d := range c.GuestDevices {
++			names = append(names, string(d))
++		}
++	}
++	return names
++}
++
+ // workerPoolLabel names the WorkerPool on each of its worker pods.
+ const workerPoolLabel = "ate.dev/worker-pool"
+ 
+@@ -147,6 +158,13 @@ func buildDeploymentApplyConfig(wp *atev1.WorkerPool, otel workerOTelSettings, s
+ 		args = append(args, "--atunnel-broker-identity="+brokerIdentity)
+ 	}
+ 
++	// Only a microvm class carries guestDevices, and ateworker-gvisor has no
++	// such flag. Pass it only when set, so a worker image that does not know
++	// the flag still starts.
++	if devices := guestDevices(wp); len(devices) > 0 {
++		args = append(args, "--guest-devices="+strings.Join(devices, ","))
++	}
++
+ 	args = append(args,
+ 		"--atunnel-egress-listen-address=0.0.0.0:15001",
+ 		"--atunnel-egress-trust-bundle="+atunnelEgressTrustMountPath+"/trust-bundle.pem",
+diff --git a/cmd/atecontroller/internal/controllers/workerpool_apply_test.go b/cmd/atecontroller/internal/controllers/workerpool_apply_test.go
+index 2ae55a258..7f03175c5 100644
+--- a/cmd/atecontroller/internal/controllers/workerpool_apply_test.go
++++ b/cmd/atecontroller/internal/controllers/workerpool_apply_test.go
+@@ -1176,3 +1176,31 @@ func TestBuildDeploymentPreview(t *testing.T) {
+ 		})
+ 	}
+ }
++
++func TestGuestDevicesFlag(t *testing.T) {
++	tests := []struct {
++		name    string
++		class   atev1.WorkerPoolSandboxClass
++		wantArg string
++	}{
++		{"microvm with fuse", atev1.WorkerPoolSandboxClass{Name: atev1.SandboxClassMicroVM, GuestDevices: []atev1.GuestDevice{atev1.GuestDeviceFUSE}}, "--guest-devices=fuse"},
++		{"microvm without devices", atev1.WorkerPoolSandboxClass{Name: atev1.SandboxClassMicroVM}, ""},
++		{"gvisor", atev1.WorkerPoolSandboxClass{Name: atev1.SandboxClassGvisor}, ""},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			wp := testWorkerPoolApplyConfig(nil)
++			wp.Spec.SandboxClasses = []atev1.WorkerPoolSandboxClass{tt.class}
++			args := buildDeploymentApplyConfig(wp, workerOTelSettings{}, installdefaults.SystemNamespace, installdefaults.AteletServiceAccount, installdefaults.RouterServiceAccount, egresspolicy.DNSEgressPolicyEnforceInAtunnel).Spec.Template.Spec.Containers[0].Args
++			var got string
++			for _, a := range args {
++				if strings.HasPrefix(a, "--guest-devices") {
++					got = a
++				}
++			}
++			if got != tt.wantArg {
++				t.Errorf("guest devices arg = %q, want %q; args = %v", got, tt.wantArg, args)
++			}
++		})
++	}
++}
+diff --git a/cmd/ateworker-microvm/internal/kata/specconv.go b/cmd/ateworker-microvm/internal/kata/specconv.go
+index dfc546ed5..c92dd3a75 100644
+--- a/cmd/ateworker-microvm/internal/kata/specconv.go
++++ b/cmd/ateworker-microvm/internal/kata/specconv.go
+@@ -112,6 +112,21 @@ func SpecToAgentPB(s *specs.Spec) *agentpb.Spec {
+ 			}
+ 			l.Namespaces = append(l.Namespaces, &agentpb.LinuxNamespace{Type: string(ns.Type)})
+ 		}
++		// The agent creates these nodes in the container's /dev. The
++		// Resources.Devices cgroup rules below must also allow them.
++		for _, d := range s.Linux.Devices {
++			ld := &agentpb.LinuxDevice{Path: d.Path, Type: d.Type, Major: d.Major, Minor: d.Minor}
++			if d.FileMode != nil {
++				ld.FileMode = uint32(*d.FileMode)
++			}
++			if d.UID != nil {
++				ld.UID = *d.UID
++			}
++			if d.GID != nil {
++				ld.GID = *d.GID
++			}
++			l.Devices = append(l.Devices, ld)
++		}
+ 		if r := s.Linux.Resources; r != nil {
+ 			res := &agentpb.LinuxResources{}
+ 			for _, d := range r.Devices {
+diff --git a/cmd/ateworker-microvm/internal/kata/specconv_linux_test.go b/cmd/ateworker-microvm/internal/kata/specconv_linux_test.go
+index 5abca549c..bf0f160df 100644
+--- a/cmd/ateworker-microvm/internal/kata/specconv_linux_test.go
++++ b/cmd/ateworker-microvm/internal/kata/specconv_linux_test.go
+@@ -17,6 +17,7 @@
+ package kata
+ 
+ import (
++	"os"
+ 	"slices"
+ 	"testing"
+ 
+@@ -194,3 +195,20 @@ func TestSpecToAgentPB_ForwardsCwd(t *testing.T) {
+ 		t.Fatalf("Process.Cwd = %q, want /work", got.GetProcess().GetCwd())
+ 	}
+ }
++
++// The agent creates a device node only if the spec it is sent lists it.
++func TestSpecToAgentPB_Devices(t *testing.T) {
++	mode := os.FileMode(0o666)
++	got := SpecToAgentPB(&specs.Spec{
++		Linux: &specs.Linux{
++			Devices: []specs.LinuxDevice{{Path: "/dev/fuse", Type: "c", Major: 10, Minor: 229, FileMode: &mode}},
++		},
++	})
++	if len(got.Linux.Devices) != 1 {
++		t.Fatalf("Devices = %v, want one entry", got.Linux.Devices)
++	}
++	d := got.Linux.Devices[0]
++	if d.Path != "/dev/fuse" || d.Type != "c" || d.Major != 10 || d.Minor != 229 || d.FileMode != 0o666 {
++		t.Errorf("Devices[0] = %+v, want /dev/fuse c 10:229 mode 0666", d)
++	}
++}
+diff --git a/cmd/ateworker-microvm/main.go b/cmd/ateworker-microvm/main.go
+index 845f26d00..5e5f7a580 100644
+--- a/cmd/ateworker-microvm/main.go
++++ b/cmd/ateworker-microvm/main.go
+@@ -51,6 +51,7 @@ import (
+ 	"go.ate.dev/substrate/internal/atunnel"
+ 	"go.ate.dev/substrate/internal/bootid"
+ 	"go.ate.dev/substrate/internal/nodepath"
++	"go.ate.dev/substrate/internal/ocispec"
+ 	"go.ate.dev/substrate/internal/otlprelay"
+ 	"go.ate.dev/substrate/internal/preview"
+ 	"go.ate.dev/substrate/internal/proto/ateworkerpb"
+@@ -81,6 +82,7 @@ var (
+ 
+ 	readinessListenAddress = pflag.String("readiness-listen-address", "0.0.0.0:8080", "Address for the HTTP /readyz and /healthz probes")
+ 	maxActors              = pflag.Int("max-actors", 1000, "How many actors this worker will host at once")
++	guestDevices           = pflag.StringSlice("guest-devices", nil, "Device nodes to create in each guest container, from a fixed allowlist (fuse).")
+ 	usageSampleInterval    = pflag.Duration("usage-sample-interval", time.Minute, "How often the ateworker samples the resource usage of its actors. Each sample writes an ate.actor.usage_sampled record per actor, and GetActiveWorkloadStats serves the latest.")
+ )
+ 
+@@ -122,6 +124,9 @@ func do(ctx context.Context) error {
+ 	if *maxActors < 0 {
+ 		return fmt.Errorf("--max-actors must not be negative, got %d", *maxActors)
+ 	}
++	if err := ocispec.ValidateGuestDevices(*guestDevices); err != nil {
++		return fmt.Errorf("--guest-devices: %w", err)
++	}
+ 	if *usageSampleInterval < minUsageSampleInterval {
+ 		return fmt.Errorf("--usage-sample-interval must be at least %v, got %v", minUsageSampleInterval, *usageSampleInterval)
+ 	}
+@@ -239,6 +244,7 @@ func do(ctx context.Context) error {
+ 		return err
+ 	}
+ 	ateworkerService := NewService(*podUID, *chBinary, *guestDebug, *maxActors, tunnel, actorLogger, bootID)
++	ateworkerService.guestDevices = *guestDevices
+ 	ateworkerService.throttleMemory = cgroup.PSIEnabled(cgroup.Root)
+ 	if !ateworkerService.throttleMemory {
+ 		slog.WarnContext(ctx, "Kernel has no cgroup memory pressure (PSI), so actor cgroups get no memory limit and an actor over its booking can restart the worker")
+@@ -388,6 +394,9 @@ type AteWorkerService struct {
+ 	podUID     string
+ 	chBinary   string
+ 	guestDebug bool
++	// guestDevices names the allowlisted device nodes to create in each guest
++	// container. Set from --guest-devices.
++	guestDevices []string
+ 
+ 	// snapshotWrites holds a slot per CH snapshot write in flight, whose page
+ 	// cache memoryReservedBytes budgets for.
+diff --git a/cmd/ateworker-microvm/run.go b/cmd/ateworker-microvm/run.go
+index 058849dd2..b5b8d8eb0 100644
+--- a/cmd/ateworker-microvm/run.go
++++ b/cmd/ateworker-microvm/run.go
+@@ -654,7 +654,7 @@ func (s *AteWorkerService) buildActorContainers(actorUID string, actorDirs *atew
+ 		cn := c.GetName()
+ 		bundle := ociBundlePath(actorDirs, cn)
+ 		spec := ocispec.Build(ocispec.Options{ActorUID: actorUID, ActorDirs: actorDirs, Container: c})
+-		if err := ocispec.ShapeMicroVM(spec, ocispec.MicroVMOptions{ActorDirs: actorDirs, ContainerName: cn}); err != nil {
++		if err := ocispec.ShapeMicroVM(spec, ocispec.MicroVMOptions{ActorDirs: actorDirs, ContainerName: cn, GuestDevices: s.guestDevices}); err != nil {
+ 			return nil, fmt.Errorf("while shaping the OCI spec for %q: %w", cn, err)
+ 		}
+ 		// Compose the bundle rootfs from the node's cached image layers (an
+diff --git a/docs/reference/api-guide.md b/docs/reference/api-guide.md
+index 50b6873d7..6e1a0e0cd 100644
+--- a/docs/reference/api-guide.md
++++ b/docs/reference/api-guide.md
+@@ -23,7 +23,7 @@ The `WorkerPool` defines the pool of physical "warm" compute capacity. It manage
+ | :--- | :--- | :--- |
+ | `replicas` | `int32` | **Required.** Number of physical standby pods to maintain in the cluster. |
+ | `workerImage` | `string` | **Required.** The container image for the `ateworker` process (e.g. `ko://go.ate.dev/substrate/cmd/ateworker-gvisor`). |
+-| `sandboxClasses` | `[]WorkerPoolSandboxClass` | **Required.** The sandbox runtime families the pool runs; exactly one entry today. Each entry has `name` (**required**, `gvisor` or `microvm`, immutable), which drives the worker pod shape (e.g. KVM device mounts, node placement), and `configRef.name` (optional), which names a cluster-scoped [`SandboxConfig`](#3-sandboxconfig-the-sandbox-itself) of the same class. Without `configRef`, the pool uses the class default (see [Class default](#class-default)). The controller records the result in `status.sandboxClasses`. The sandbox binaries an actor boots with come from the `SandboxConfig` the pool of its assigned worker resolved. |
++| `sandboxClasses` | `[]WorkerPoolSandboxClass` | **Required.** The sandbox runtime families the pool runs; exactly one entry today. Each entry has `name` (**required**, `gvisor` or `microvm`, immutable), which drives the worker pod shape (e.g. KVM device mounts, node placement), and `configRef.name` (optional), which names a cluster-scoped [`SandboxConfig`](#3-sandboxconfig-the-sandbox-itself) of the same class. A `microvm` entry can also set `guestDevices` (see [Guest devices](#guest-devices-guestdevices)). Without `configRef`, the pool uses the class default (see [Class default](#class-default)). The controller records the result in `status.sandboxClasses`. The sandbox binaries an actor boots with come from the `SandboxConfig` the pool of its assigned worker resolved. |
+ | `template` | `WorkerPoolPodTemplate` | **Optional.** Metadata, scheduling, and resource settings for worker workloads. |
+ 
+ #### `WorkerPoolPodTemplate` (`spec.template`)
+@@ -129,6 +129,25 @@ A `nvidia.com/gpu` pool limit is now an ordinary extended resource: it places th
+ worker pod on a GPU node and reserves the device, and nothing else reads it.
+ 
+ 
++### Guest devices (`guestDevices`)
++
++A `microvm` entry in `sandboxClasses` can give its actors a device node from a fixed allowlist. The only value now is `fuse` (`/dev/fuse`, char 10:229). It lets an actor mount a FUSE filesystem in its guest.
++
++For each name, the microVM worker adds the node to the OCI spec it sends to the kata agent. It also adds a device cgroup rule that allows the node. The agent creates the node in the container's `/dev` in the guest. The guest kernel serves the device, so the actor gets no host device. The API server refuses `guestDevices` on a `gvisor` entry.
++
++The node alone does not let an actor mount. The container must also ask for `SYS_ADMIN` in [`securityContext.capabilities`](#container-capabilities-securitycontextcapabilities). To send only these actors to the pool, put a label on the `WorkerPool` and match it with the template's `workerSelector`:
++
++```yaml
++kind: WorkerPool
++metadata:
++  labels:
++    example.com/guest-device-fuse: "true"
++spec:
++  sandboxClasses:
++  - name: microvm
++    guestDevices: [fuse]
++```
++
+ ### Status (`WorkerPoolStatus`)
+ 
+ | Field | Type | Description |
+diff --git a/internal/e2e/fixtures/guestdevices/guestdevices-templates.yaml.tmpl b/internal/e2e/fixtures/guestdevices/guestdevices-templates.yaml.tmpl
+new file mode 100644
+index 000000000..8d962d302
+--- /dev/null
++++ b/internal/e2e/fixtures/guestdevices/guestdevices-templates.yaml.tmpl
+@@ -0,0 +1,65 @@
++# Copyright 2026 The Agent Substrate Authors
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++# The guestdevices fixture's ActorTemplates: protojson-shaped
++# ateapi.ActorTemplate documents. Both run the probe with SYS_ADMIN, which a
++# FUSE mount needs. They differ only in the pool they select, so the result
++# depends only on the pool's guestDevices.
++
++metadata:
++  atespace: ate-e2e${FIXTURE_SUFFIX}
++  name: fuse
++workerSelector:
++  matchLabels:
++    workload: guestdevices-fuse
++containers:
++- name: probe
++  image: ko://go.ate.dev/substrate/internal/e2e/fixtures/probe
++  command: ["/ko-app/probe"]
++  securityContext:
++    capabilities:
++      add: ["SYS_ADMIN"]
++  wakeupProbe:
++    httpGet:
++      path: /healthz
++      port: 80
++    timeoutSeconds: 60
++resources:
++  limits:
++    cpuMillicores: 1000
++    memoryBytes: 536870912 # 512Mi
++
++---
++
++metadata:
++  atespace: ate-e2e${FIXTURE_SUFFIX}
++  name: nofuse
++workerSelector:
++  matchLabels:
++    workload: guestdevices-nofuse
++containers:
++- name: probe
++  image: ko://go.ate.dev/substrate/internal/e2e/fixtures/probe
++  command: ["/ko-app/probe"]
++  securityContext:
++    capabilities:
++      add: ["SYS_ADMIN"]
++  wakeupProbe:
++    httpGet:
++      path: /healthz
++      port: 80
++    timeoutSeconds: 60
++resources:
++  limits:
++    cpuMillicores: 1000
++    memoryBytes: 536870912 # 512Mi
+diff --git a/internal/e2e/fixtures/guestdevices/guestdevices.yaml.tmpl b/internal/e2e/fixtures/guestdevices/guestdevices.yaml.tmpl
+new file mode 100644
+index 000000000..a55e45a16
+--- /dev/null
++++ b/internal/e2e/fixtures/guestdevices/guestdevices.yaml.tmpl
+@@ -0,0 +1,51 @@
++# Copyright 2026 The Agent Substrate Authors
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++# The k8s half of the guestdevices fixture: two microVM pools that differ only
++# in the sandbox class's guestDevices. The suite deploys it only in the microVM
++# lane, because the API server refuses guestDevices on a gvisor class.
++
++apiVersion: v1
++kind: Namespace
++metadata:
++  name: ate-e2e${FIXTURE_SUFFIX}
++
++---
++
++apiVersion: ate.dev/v1
++kind: WorkerPool
++metadata:
++  name: fuse
++  namespace: ate-e2e${FIXTURE_SUFFIX}
++  labels:
++    workload: guestdevices-fuse
++spec:
++  # One worker for the golden snapshot and one for the actor.
++  replicas: 2
++  workerImage: ${WORKER_IMAGE}
++${WORKERPOOL_RUNTIME}
++    guestDevices: [fuse]
++
++---
++
++apiVersion: ate.dev/v1
++kind: WorkerPool
++metadata:
++  name: nofuse
++  namespace: ate-e2e${FIXTURE_SUFFIX}
++  labels:
++    workload: guestdevices-nofuse
++spec:
++  replicas: 2
++  workerImage: ${WORKER_IMAGE}
++${WORKERPOOL_RUNTIME}
+diff --git a/internal/e2e/fixtures/probe/fuse_linux.go b/internal/e2e/fixtures/probe/fuse_linux.go
+new file mode 100644
+index 000000000..892a018f6
+--- /dev/null
++++ b/internal/e2e/fixtures/probe/fuse_linux.go
+@@ -0,0 +1,164 @@
++//go:build linux
++
++// Copyright 2026 The Agent Substrate Authors
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package main
++
++import (
++	"encoding/binary"
++	"fmt"
++	"net/http"
++	"os"
++	"time"
++
++	"golang.org/x/sys/unix"
++)
++
++const fuseDevice = "/dev/fuse"
++
++// fuseRootSize is the size the probe's FUSE server reports for its root. A
++// stat that returns it proves a full round trip: the kernel mounted the
++// filesystem, sent the request over /dev/fuse and used the probe's answer.
++const fuseRootSize = 4242
++
++// fuseResponse reports whether /dev/fuse exists and whether a FUSE mount
++// served by the probe itself works.
++type fuseResponse struct {
++	Exists   bool   `json:"exists"`
++	Major    uint32 `json:"major"`
++	Minor    uint32 `json:"minor"`
++	Mounted  bool   `json:"mounted"`
++	RootSize int64  `json:"rootSize"`
++	Error    string `json:"error,omitempty"`
++}
++
++// fuseProbe stats /dev/fuse. If it is a char device, it mounts a FUSE
++// filesystem, stats the mount root and unmounts it again.
++func fuseProbe(w http.ResponseWriter, _ *http.Request) {
++	var out fuseResponse
++	var st unix.Stat_t
++	if err := unix.Stat(fuseDevice, &st); err == nil && st.Mode&unix.S_IFMT == unix.S_IFCHR {
++		out.Exists = true
++		out.Major, out.Minor = unix.Major(st.Rdev), unix.Minor(st.Rdev)
++		out.RootSize, out.Error = mountFUSE()
++		out.Mounted = out.Error == ""
++	}
++	writeJSON(w, out)
++}
++
++// mountFUSE mounts a FUSE filesystem that serveFUSE answers, and returns the
++// size that a stat of its root reports.
++func mountFUSE() (int64, string) {
++	fd, err := unix.Open(fuseDevice, unix.O_RDWR|unix.O_CLOEXEC, 0)
++	if err != nil {
++		return 0, "open: " + err.Error()
++	}
++	dir, err := os.MkdirTemp("", "fuse")
++	if err != nil {
++		unix.Close(fd)
++		return 0, "mkdir: " + err.Error()
++	}
++	defer os.Remove(dir)
++	data := fmt.Sprintf("fd=%d,rootmode=40000,user_id=0,group_id=0", fd)
++	if err := unix.Mount("probe", dir, "fuse", unix.MS_NOSUID|unix.MS_NODEV, data); err != nil {
++		unix.Close(fd)
++		return 0, "mount: " + err.Error()
++	}
++	// The unmount ends the connection, so serveFUSE's read fails and it
++	// closes fd.
++	go serveFUSE(fd)
++	defer func() { _ = unix.Unmount(dir, unix.MNT_DETACH) }()
++
++	// ponytail: a stat that hangs leaks this goroutine; the probe is a
++	// throwaway test actor.
++	type result struct {
++		st  unix.Stat_t
++		err error
++	}
++	done := make(chan result, 1)
++	go func() {
++		var r result
++		r.err = unix.Stat(dir, &r.st)
++		done <- r
++	}()
++	select {
++	case r := <-done:
++		if r.err != nil {
++			return 0, "stat: " + r.err.Error()
++		}
++		return r.st.Size, ""
++	case <-time.After(10 * time.Second):
++		return 0, "stat: no answer in 10s"
++	}
++}
++
++// FUSE protocol opcodes and sizes, from <linux/fuse.h>.
++const (
++	fuseGetattr     = 3
++	fuseForget      = 2
++	fuseInit        = 26
++	fuseBatchForget = 42
++	fuseInHeader    = 40
++	fuseOutHeader   = 16
++	fuseInitOut     = 64
++	fuseAttrOut     = 104
++)
++
++// serveFUSE answers FUSE_INIT and FUSE_GETATTR, and ENOSYS for all other
++// requests. It is the smallest server that lets the kernel stat the root.
++func serveFUSE(fd int) {
++	defer unix.Close(fd)
++	le := binary.LittleEndian
++	buf := make([]byte, 1<<17) // the kernel refuses a read buffer under 8KiB
++	for {
++		n, err := unix.Read(fd, buf)
++		if err == unix.EINTR {
++			continue
++		}
++		if err != nil || n < fuseInHeader {
++			return
++		}
++		opcode, unique := le.Uint32(buf[4:]), le.Uint64(buf[8:])
++		var body []byte
++		var errno int32
++		switch opcode {
++		case fuseForget, fuseBatchForget:
++			continue // no reply
++		case fuseInit:
++			body = make([]byte, fuseInitOut)
++			le.PutUint32(body[0:], 7)                                        // major
++			le.PutUint32(body[4:], min(le.Uint32(buf[fuseInHeader+4:]), 31)) // minor
++			le.PutUint32(body[8:], le.Uint32(buf[fuseInHeader+8:]))          // max_readahead
++			le.PutUint32(body[20:], 4096)                                    // max_write
++		case fuseGetattr:
++			body = make([]byte, fuseAttrOut)
++			attr := body[16:]                           // after attr_valid, attr_valid_nsec, dummy
++			le.PutUint64(attr[0:], 1)                   // ino: FUSE_ROOT_ID
++			le.PutUint64(attr[8:], fuseRootSize)        // size
++			le.PutUint32(attr[60:], unix.S_IFDIR|0o755) // mode
++			le.PutUint32(attr[64:], 2)                  // nlink
++		default:
++			errno = -int32(unix.ENOSYS)
++		}
++		out := make([]byte, fuseOutHeader+len(body))
++		le.PutUint32(out[0:], uint32(len(out)))
++		le.PutUint32(out[4:], uint32(errno))
++		le.PutUint64(out[8:], unique)
++		copy(out[fuseOutHeader:], body)
++		if _, err := unix.Write(fd, out); err != nil {
++			return
++		}
++	}
++}
+diff --git a/internal/e2e/fixtures/probe/fuse_other.go b/internal/e2e/fixtures/probe/fuse_other.go
+new file mode 100644
+index 000000000..b6dfa7040
+--- /dev/null
++++ b/internal/e2e/fixtures/probe/fuse_other.go
+@@ -0,0 +1,23 @@
++//go:build !linux
++
++// Copyright 2026 The Agent Substrate Authors
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package main
++
++import "net/http"
++
++func fuseProbe(w http.ResponseWriter, _ *http.Request) {
++	http.Error(w, "FUSE probe needs Linux", http.StatusNotImplemented)
++}
+diff --git a/internal/e2e/fixtures/probe/main.go b/internal/e2e/fixtures/probe/main.go
+index 007b61a45..44f425315 100644
+--- a/internal/e2e/fixtures/probe/main.go
++++ b/internal/e2e/fixtures/probe/main.go
+@@ -669,6 +669,7 @@ func main() {
+ 	mux.HandleFunc("/stat", stat)
+ 	mux.HandleFunc("/resources", resources)
+ 	mux.HandleFunc("/capabilities", capabilities)
++	mux.HandleFunc("/fuse", fuseProbe)
+ 	mux.HandleFunc("/filesystem", filesystem)
+ 	mux.HandleFunc("/healthz", healthz)
+ 
+diff --git a/internal/e2e/suites/guestdevices/guestdevices_test.go b/internal/e2e/suites/guestdevices/guestdevices_test.go
+new file mode 100644
+index 000000000..b3bae8456
+--- /dev/null
++++ b/internal/e2e/suites/guestdevices/guestdevices_test.go
+@@ -0,0 +1,141 @@
++// Copyright 2026 The Agent Substrate Authors
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//      http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package guestdevices
++
++import (
++	"context"
++	"encoding/json"
++	"io"
++	"net/http"
++	"strings"
++	"testing"
++
++	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
++
++	"go.ate.dev/substrate/api/ateapi/v1"
++	atev1 "go.ate.dev/substrate/api/infra/k8s/ate/v1"
++	"go.ate.dev/substrate/internal/e2e"
++	"go.ate.dev/substrate/internal/resources"
++)
++
++// fuseResponse mirrors the probe's /fuse payload.
++type fuseResponse struct {
++	Exists   bool   `json:"exists"`
++	Major    uint32 `json:"major"`
++	Minor    uint32 `json:"minor"`
++	Mounted  bool   `json:"mounted"`
++	RootSize int64  `json:"rootSize"`
++	Error    string `json:"error"`
++}
++
++// fuseRootSize is the root size the probe's own FUSE server reports.
++const fuseRootSize = 4242
++
++// TestGuestDevicesRefusedOnGvisor asks the API server to create a pool with
++// guestDevices on a gvisor class. It runs in both lanes, because it needs no
++// worker.
++func TestGuestDevicesRefusedOnGvisor(t *testing.T) {
++	ctx := context.Background()
++	wp := &atev1.WorkerPool{
++		ObjectMeta: metav1.ObjectMeta{Name: "guestdevices-gvisor", Namespace: "default"},
++		Spec: atev1.WorkerPoolSpec{
++			Replicas:    1,
++			WorkerImage: "ateworker:latest",
++			SandboxClasses: []atev1.WorkerPoolSandboxClass{{
++				Name:         atev1.SandboxClassGvisor,
++				GuestDevices: []atev1.GuestDevice{atev1.GuestDeviceFUSE},
++			}},
++		},
++	}
++	_, err := e2e.GetClients().SubstrateK8s.AteV1().WorkerPools("default").Create(ctx, wp, metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}})
++	if err == nil || !strings.Contains(err.Error(), "guestDevices requires the microvm sandbox class") {
++		t.Fatalf("Create(gvisor pool with guestDevices) error = %v, want the guestDevices refusal", err)
++	}
++}
++
++// TestGuestDeviceFUSE resumes an actor with SYS_ADMIN on a microVM pool with
++// guestDevices: [fuse], and one on a pool without it. The probe inside each
++// actor reports /dev/fuse and mounts a FUSE filesystem that it serves itself.
++func TestGuestDeviceFUSE(t *testing.T) {
++	if !e2e.IsMicroVM() {
++		t.Skip("guestDevices is microVM only; TestGuestDevicesRefusedOnGvisor covers gvisor")
++	}
++	if _, err := e2e.CheckEnv("KO_DOCKER_REPO"); err != nil {
++		t.Fatalf("CheckEnv failed: %v", err)
++	}
++	ctx := context.Background()
++	clients := e2e.GetClients()
++	namespace, _ := e2e.DeploySubstrateFixture(t, ctx, clients, e2e.SubstrateFixtureManifests{
++		Pool:     "internal/e2e/fixtures/guestdevices/guestdevices.yaml.tmpl",
++		Template: "internal/e2e/fixtures/guestdevices/guestdevices-templates.yaml.tmpl",
++	}, "guestdevices", nil)
++
++	t.Run("pool with guestDevices fuse", func(t *testing.T) {
++		got := probeFUSE(t, ctx, clients, namespace, "fuse")
++		if !got.Exists || got.Major != 10 || got.Minor != 229 {
++			t.Fatalf("/dev/fuse = %+v, want a char device 10:229", got)
++		}
++		if !got.Mounted || got.RootSize != fuseRootSize {
++			t.Fatalf("FUSE mount = %+v, want mounted with root size %d", got, fuseRootSize)
++		}
++	})
++	t.Run("pool without guestDevices", func(t *testing.T) {
++		if got := probeFUSE(t, ctx, clients, namespace, "nofuse"); got.Exists {
++			t.Fatalf("/dev/fuse = %+v, want none", got)
++		}
++	})
++}
++
++// probeFUSE creates and resumes an actor from template and returns its /fuse
++// report.
++func probeFUSE(t *testing.T, ctx context.Context, clients *e2e.Clients, namespace, template string) fuseResponse {
++	t.Helper()
++	ref := &ateapi.ObjectRef{Atespace: namespace, Name: template + "-actor"}
++	if _, err := clients.SubstrateAPI.CreateActor(ctx, &ateapi.CreateActorRequest{Actor: &ateapi.Actor{
++		Metadata:      &ateapi.ResourceMetadata{Atespace: namespace, Name: ref.Name},
++		ActorTemplate: &ateapi.ObjectRef{Atespace: namespace, Name: template},
++	}}); err != nil {
++		t.Fatalf("CreateActor %q: %v", ref.Name, err)
++	}
++	t.Cleanup(func() {
++		// DeleteActor requires the actor to be suspended.
++		_, _ = clients.SubstrateAPI.SuspendActor(ctx, &ateapi.SuspendActorRequest{Actor: ref})
++		_, _ = clients.SubstrateAPI.DeleteActor(ctx, &ateapi.DeleteActorRequest{Actor: ref})
++	})
++	if _, err := e2e.ResumeActorAwaitCapacity(t, ctx, clients, &ateapi.ResumeActorRequest{Actor: ref}); err != nil {
++		t.Fatalf("ResumeActor %q: %v", ref.Name, err)
++	}
++
++	rc, err := e2e.NewRouterClient(t, ctx)
++	if err != nil {
++		t.Fatalf("NewRouterClient: %v", err)
++	}
++	defer rc.Close()
++	resp, err := rc.Get(ctx, resources.ActorRef{Atespace: namespace, Name: ref.Name}, "/fuse")
++	if err != nil {
++		t.Fatalf("GET /fuse for %q: %v", ref.Name, err)
++	}
++	defer resp.Body.Close()
++	body, _ := io.ReadAll(resp.Body)
++	if resp.StatusCode != http.StatusOK {
++		t.Fatalf("GET /fuse for %q: status %d, body %q", ref.Name, resp.StatusCode, body)
++	}
++	t.Logf("GET /fuse for %q: %s", ref.Name, body)
++	var out fuseResponse
++	if err := json.Unmarshal(body, &out); err != nil {
++		t.Fatalf("decoding /fuse for %q: %v", ref.Name, err)
++	}
++	return out
++}
+diff --git a/internal/e2e/suites/guestdevices/testmain_test.go b/internal/e2e/suites/guestdevices/testmain_test.go
+new file mode 100644
+index 000000000..c32999792
+--- /dev/null
++++ b/internal/e2e/suites/guestdevices/testmain_test.go
+@@ -0,0 +1,24 @@
++// Copyright 2026 The Agent Substrate Authors
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package guestdevices
++
++import (
++	"os"
++	"testing"
++
++	"go.ate.dev/substrate/internal/e2e"
++)
++
++func TestMain(m *testing.M) { os.Exit(e2e.RunTestMain(m)) }
+diff --git a/internal/ocispec/microvm.go b/internal/ocispec/microvm.go
+index 311cf94a6..391fdcf18 100644
+--- a/internal/ocispec/microvm.go
++++ b/internal/ocispec/microvm.go
+@@ -16,6 +16,8 @@ package ocispec
+ 
+ import (
+ 	"fmt"
++	"maps"
++	"os"
+ 	"path"
+ 	"path/filepath"
+ 	"runtime"
+@@ -55,6 +57,26 @@ type MicroVMOptions struct {
+ 	// staged into the share.
+ 	ActorDirs     *ateworkerpb.ActorDirs
+ 	ContainerName string
++	// GuestDevices names device nodes from the guestDevices allowlist to
++	// create in the guest container.
++	GuestDevices []string
++}
++
++// guestDevices is the allowlist of device nodes an operator can give a
++// microVM worker pool. Each node exists only in the guest kernel, so it gives
++// the actor no host device.
++var guestDevices = map[string]specs.LinuxDevice{
++	"fuse": {Path: "/dev/fuse", Type: "c", Major: 10, Minor: 229, FileMode: new(os.FileMode(0o666))},
++}
++
++// ValidateGuestDevices returns an error if a name is not in guestDevices.
++func ValidateGuestDevices(names []string) error {
++	for _, n := range names {
++		if _, ok := guestDevices[n]; !ok {
++			return fmt.Errorf("guest device %q is not allowed; allowed: %v", n, slices.Sorted(maps.Keys(guestDevices)))
++		}
++	}
++	return nil
+ }
+ 
+ // ShapeMicroVM repoints volume bind mounts to guest share paths, applies
+@@ -109,6 +131,16 @@ func ShapeMicroVM(spec *specs.Spec, o MicroVMOptions) error {
+ 	// The container's own declared limits survive the merge; StartRootfsContainer
+ 	// sets CgroupsPath.
+ 	spec.Linux.Resources = mergeKataResources(spec.Linux.Resources)
++	for _, n := range o.GuestDevices {
++		d, ok := guestDevices[n]
++		if !ok {
++			return fmt.Errorf("guest device %q is not allowed", n)
++		}
++		spec.Linux.Devices = append(spec.Linux.Devices, d)
++		spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, specs.LinuxDeviceCgroup{
++			Allow: true, Type: d.Type, Major: new(d.Major), Minor: new(d.Minor), Access: "rwm",
++		})
++	}
+ 	return nil
+ }
+ 
+diff --git a/internal/ocispec/microvm_test.go b/internal/ocispec/microvm_test.go
+index 63754fc7c..0dabaec51 100644
+--- a/internal/ocispec/microvm_test.go
++++ b/internal/ocispec/microvm_test.go
+@@ -305,3 +305,55 @@ func TestShapeMicroVM_SystemMounts(t *testing.T) {
+ 		}
+ 	}
+ }
++
++func TestShapeMicroVM_GuestDevices(t *testing.T) {
++	for _, tc := range []struct {
++		name    string
++		devices []string
++		wantErr bool
++	}{
++		{name: "none"},
++		{name: "fuse", devices: []string{"fuse"}},
++		{name: "not in the allowlist", devices: []string{"kvm"}, wantErr: true},
++		{name: "a path", devices: []string{"/dev/fuse"}, wantErr: true},
++		{name: "empty", devices: []string{""}, wantErr: true},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			spec := Build(Options{Container: &ateworkerpb.Container{ContainerSpec: &ateworkerpb.ContainerSpec{Args: []string{"/app"}}}})
++			err := ShapeMicroVM(spec, MicroVMOptions{ActorDirs: parityActorDirs, ContainerName: "app", GuestDevices: tc.devices})
++			if (err != nil) != tc.wantErr {
++				t.Fatalf("ShapeMicroVM() = %v, want error: %v", err, tc.wantErr)
++			}
++			if (ValidateGuestDevices(tc.devices) != nil) != tc.wantErr {
++				t.Errorf("ValidateGuestDevices(%q) disagrees with ShapeMicroVM", tc.devices)
++			}
++			if tc.wantErr {
++				return
++			}
++
++			if len(tc.devices) == 0 {
++				if len(spec.Linux.Devices) != 0 {
++					t.Errorf("Linux.Devices = %+v, want none", spec.Linux.Devices)
++				}
++				assertDefaultDeviceAllowlist(t, spec.Linux.Resources.Devices)
++				return
++			}
++			if len(spec.Linux.Devices) != 1 {
++				t.Fatalf("Linux.Devices = %+v, want /dev/fuse only", spec.Linux.Devices)
++			}
++			d := spec.Linux.Devices[0]
++			if d.Path != "/dev/fuse" || d.Type != "c" || d.Major != 10 || d.Minor != 229 {
++				t.Errorf("Linux.Devices[0] = %+v, want /dev/fuse c 10:229", d)
++			}
++			// The default deny rule comes first, so the allow rule has to follow it.
++			rules := spec.Linux.Resources.Devices
++			last := rules[len(rules)-1]
++			if !last.Allow || last.Type != "c" || !eqInt64Ptr(last.Major, new(int64(10))) || !eqInt64Ptr(last.Minor, new(int64(229))) || last.Access != "rwm" {
++				t.Errorf("last device cgroup rule = %+v, want allow c 10:229 rwm", last)
++			}
++			if rules[0].Allow {
++				t.Errorf("first device cgroup rule = %+v, want the default deny", rules[0])
++			}
++		})
++	}
++}
+diff --git a/manifests/ate-install/generated/ate.dev_workerpools.yaml b/manifests/ate-install/generated/ate.dev_workerpools.yaml
+index 8c76630c8..52db1dcc7 100644
+--- a/manifests/ate-install/generated/ate.dev_workerpools.yaml
++++ b/manifests/ate-install/generated/ate.dev_workerpools.yaml
+@@ -103,6 +103,22 @@ spec:
+                       required:
+                       - name
+                       type: object
++                    guestDevices:
++                      description: |-
++                        guestDevices names device nodes to create in each actor container on
++                        this pool, with a device cgroup rule that allows them. Only the microvm
++                        class accepts it: the node exists in the guest kernel, not on the host.
++                        An actor also needs the capabilities to use the device, for example
++                        SYS_ADMIN to mount a FUSE filesystem.
++                      items:
++                        description: GuestDevice names a device node from a fixed
++                          allowlist.
++                        enum:
++                        - fuse
++                        type: string
++                      maxItems: 1
++                      type: array
++                      x-kubernetes-list-type: set
+                     name:
+                       description: |-
+                         name selects the sandbox runtime family, which drives the worker pod
+@@ -116,6 +132,10 @@ spec:
+                   required:
+                   - name
+                   type: object
++                  x-kubernetes-validations:
++                  - message: guestDevices requires the microvm sandbox class
++                    rule: '!has(self.guestDevices) || size(self.guestDevices) == 0
++                      || self.name == ''microvm'''
+                 maxItems: 1
+                 minItems: 1
+                 type: array
+-- 
+2.54.0
+

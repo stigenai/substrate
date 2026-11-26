@@ -1,0 +1,30 @@
+0001-Add-the-fork-constitution-for-spec-driven-work.patch	fork-meta	fork-only	Add the fork constitution for spec-driven work
+0002-Add-Spec-Kit-and-the-speckit-beads-extension-setup.patch	fork-meta	fork-only	Add Spec Kit and the speckit-beads extension setup
+0003-Keep-the-fork-as-a-patch-stack-on-upstream-release-t.patch	fork-meta	fork-only	Keep the fork as a patch stack on upstream release tags
+0004-ate-setup-k0s-install-profile-for-the-stigenai-fleet.patch	k0s	fork-only	ate-setup: k0s install profile for the stigenai fleet
+0005-egress-prefer-IPv4-in-the-DNS-cache-gtr-has-no-IPv6-.patch	k0s	fork-only	egress: prefer IPv4 in the DNS cache; gtr has no IPv6 egress
+0006-atelet-pull-non-GCP-images-with-the-Docker-config.patch	image-pull-keychain	candidate	atelet: pull non-GCP images with the Docker config
+0007-Pin-the-CI-tools-for-a-cached-development-environmen.patch	devenv	fork-only	Pin the CI tools for a cached development environment
+0008-Add-the-Rust-toolchain-and-libclang-to-the-devenv.patch	devenv	fork-only	Add the Rust toolchain and libclang to the devenv
+0009-Add-unzip-and-perl-to-the-devenv-and-make-the-protoc.patch	devenv	fork-only	Add unzip and perl to the devenv and make the protoc download fail on HTTP errors
+0010-Let-microVM-worker-pools-give-actors-dev-fuse.patch	microvm-fuse	candidate	Let microVM worker pools give actors /dev/fuse
+0011-Close-the-cached-atelet-conn-when-its-pod-is-replace.patch	atelet-dialer	candidate	Close the cached atelet conn when its pod is replaced or gone
+0012-Add-a-manual-e2e-that-runs-the-LayerFS-spike-image-a.patch	layerfs-e2e	fork-only	Add a manual e2e that runs the LayerFS spike image as a microVM actor
+0013-Add-a-spike-report-on-LayerFS-for-the-factory-manage.patch	fork-meta	fork-only	Add a spike report on LayerFS for the factory manager home
+0014-Add-an-aws-install-profile-with-S3-snapshots-and-IRS.patch	aws	fork-only	Add an aws install profile with S3 snapshots and IRSA
+0015-Preserve-native-TLS-through-an-opt-in-fixed-destinat.patch	native-tls-gateway	fork-only	Preserve native TLS through an opt-in fixed-destination gateway
+0016-Disable-upstream-TLS-session-resumption-on-the-egres.patch	egress-tls-pools	candidate	Disable upstream TLS session resumption on the egress clusters
+0017-Match-HTTPS-egress-rules-on-request-path-prefixes.patch	egress-paths	candidate	Match HTTPS egress rules on request path prefixes
+0018-Match-HTTPS-egress-rules-on-exact-request-paths.patch	egress-paths	candidate	Match HTTPS egress rules on exact request paths
+0019-Deny-egress-paths-that-a-server-might-decode-to-anot.patch	egress-paths	candidate	Deny egress paths that a server might decode to another path
+0020-Define-the-protected-Fabriek-activation-bootstrap-co.patch	fabriek-bootstrap	fork-only	Define the protected Fabriek activation bootstrap contract
+0021-Bind-protected-Fabriek-bootstrap-projection-to-serve.patch	fabriek-bootstrap	fork-only	Bind protected Fabriek bootstrap projection to server activation
+0022-Expose-a-consistent-public-supervisor-activation-obs.patch	fabriek-bootstrap	fork-only	Expose a consistent public supervisor activation observation
+0023-Verify-activation-issuance-and-exclude-protected-act.patch	fabriek-bootstrap	fork-only	Verify activation issuance and exclude protected actor memory snapshots
+0024-Pin-supervisor-bootstrap-log-redaction-in-intercepto.patch	fabriek-bootstrap	fork-only	Pin supervisor bootstrap log redaction in interceptor coverage
+0025-Record-independent-protected-supervisor-review.patch	fabriek-bootstrap	fork-only	Record independent protected supervisor review
+0026-Define-exact-supervisor-termination-acknowledgements.patch	supervisor-termination	fork-only	Define exact supervisor termination acknowledgements and receipts
+0027-Require-kernel-process-termination-before-supervisor.patch	supervisor-termination	fork-only	Require kernel process termination before supervisor acknowledgements
+0028-Retain-exact-supervisor-stop-and-deletion-proof.patch	supervisor-termination	fork-only	Retain exact supervisor stop and deletion proof
+0029-Record-exact-supervisor-termination-verification-evi.patch	supervisor-termination	fork-only	Record exact supervisor termination verification evidence
+0030-Register-the-isolated-native-worker-from-verified-Po.patch	static-worker	fork-only	Register the isolated native worker from verified Pod identity

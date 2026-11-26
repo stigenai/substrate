@@ -1,0 +1,43 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: claude-factory worker <factory-worker@users.noreply.github.com>
+Date: Mon, 9 Nov 2026 06:29:37 +0000
+Subject: [PATCH 09/30] Add unzip and perl to the devenv and make the protoc
+ download fail on HTTP errors
+
+hack/protoc.sh needs unzip and shasum. Without -f, curl saved an HTTP error page and the checksum check then hid the real cause.
+
+Fork-Topic: devenv
+Fork-Upstream: fork-only
+---
+ devenv.nix     | 2 ++
+ hack/protoc.sh | 2 +-
+ 2 files changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/devenv.nix b/devenv.nix
+index 349fdfe34..aafd1fb03 100644
+--- a/devenv.nix
++++ b/devenv.nix
+@@ -47,5 +47,7 @@ in
+       unstablePkgs.gitleaks
+       pkgs.gnumake
+       pkgs.git
++      pkgs.unzip
++      pkgs.perl
+     ];
+ }
+diff --git a/hack/protoc.sh b/hack/protoc.sh
+index 132227f9f..bc8b7f85d 100755
+--- a/hack/protoc.sh
++++ b/hack/protoc.sh
+@@ -62,7 +62,7 @@ if [ ! -f "$PROTOC_BIN" ]; then
+   esac
+ 
+   # Download and verify
+-  curl -sSL "$URL" -o "$OUT_DIR/protoc.zip"
++  curl -fsSL "$URL" -o "$OUT_DIR/protoc.zip"
+   ACTUAL_SHA=$(shasum -a 256 "$OUT_DIR/protoc.zip" | awk '{print $1}')
+   if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+     echo "Checksum verification failed for protoc download!"
+-- 
+2.54.0
+

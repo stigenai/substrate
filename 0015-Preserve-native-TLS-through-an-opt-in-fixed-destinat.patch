@@ -1,0 +1,1106 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Zach Taylor <zctaylor.work@gmail.com>
+Date: Thu, 26 Nov 2026 17:16:42 -0500
+Subject: [PATCH 15/30] Preserve native TLS through an opt-in fixed-destination
+ gateway
+
+tls_passthrough relays to the name in the SNI. Some workers need the
+origin certificate end to end with a single destination the actor cannot
+change.
+
+--native-tls-destination=HOST:PORT serves only that destination. Each
+CONNECT requires an actor identity UID that matches the running actor, a
+current policy with exactly one tls_passthrough rule for that host and
+port, and no policy cache. The listener relays to a static cluster, so the
+CONNECT address never picks the upstream.
+
+TestNativeTLSEnvoy runs the real Envoy image and dynamic module through
+hack/test-native-tls.sh, and a pr-workflow job runs it.
+
+Fork-Topic: native-tls-gateway
+Fork-Upstream: fork-only
+---
+ .github/workflows/pr-workflow.yaml            |  14 +
+ cmd/atenet/internal/router/cmd.go             |   1 +
+ cmd/atenet/internal/router/config.go          |  12 +
+ cmd/atenet/internal/router/config_test.go     |  22 +
+ cmd/atenet/internal/router/egress/egress.go   |  15 +
+ .../internal/router/egress/native_tls.go      |  81 +++
+ .../egress/native_tls_integration_test.go     | 553 ++++++++++++++++++
+ .../internal/router/egress/native_tls_test.go | 128 ++++
+ cmd/atenet/internal/router/router.go          |   6 +
+ docs/guides/native-tls-egress.md              |  40 ++
+ hack/test-native-tls.sh                       |  42 ++
+ internal/egresspolicy/egresspolicy.go         |  16 +
+ 12 files changed, 930 insertions(+)
+ create mode 100644 cmd/atenet/internal/router/egress/native_tls.go
+ create mode 100644 cmd/atenet/internal/router/egress/native_tls_integration_test.go
+ create mode 100644 cmd/atenet/internal/router/egress/native_tls_test.go
+ create mode 100644 docs/guides/native-tls-egress.md
+ create mode 100755 hack/test-native-tls.sh
+
+diff --git a/.github/workflows/pr-workflow.yaml b/.github/workflows/pr-workflow.yaml
+index b96206752..ad59ea32f 100644
+--- a/.github/workflows/pr-workflow.yaml
++++ b/.github/workflows/pr-workflow.yaml
+@@ -139,6 +139,20 @@ jobs:
+       env:
+         BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref }}
+       run: hack/verify/postgresql-migrations.sh "origin/${BASE_REF#refs/heads/}"
++  # Builds the dataplane image and runs the native_tls_integration tests against
++  # its Envoy. The script fails if the Envoy binary is missing.
++  native-tls:
++    runs-on: ubuntu-latest
++    timeout-minutes: 30
++    steps:
++    - name: Checkout
++      uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
++    - name: Setup Go
++      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
++      with:
++        go-version-file: 'go.mod'
++    - name: native TLS integration tests
++      run: hack/test-native-tls.sh
+   # One kind cluster exercises BOTH runtimes. Free x86-64 ubuntu-latest runners
+   # expose /dev/kvm (with a udev rule), so create-kind-cluster.sh mounts it and the
+   # micro-VM (kata + cloud-hypervisor) sandbox class works alongside gVisor.
+diff --git a/cmd/atenet/internal/router/cmd.go b/cmd/atenet/internal/router/cmd.go
+index ac169ecc5..9d92908f3 100644
+--- a/cmd/atenet/internal/router/cmd.go
++++ b/cmd/atenet/internal/router/cmd.go
+@@ -81,6 +81,7 @@ func bindRouterFlags(fs *pflag.FlagSet, cfg *routerConfig) {
+ 	fs.StringVar(&cfg.ActorIdentityCAFile, "actor-identity-ca-file", "", "PEM trust bundle for the actor-identity CA, used to verify the actor client certificates presented on egress CONNECTs. Required by the egress gateway's ext_proc sidecar; empty (the default) leaves egress authentication unconfigured and every egress CONNECT is denied.")
+ 
+ 	fs.DurationVar(&cfg.EgressPolicyCacheTTL, "egress-policy-cache-ttl", egress.DefaultPolicyCacheTTL, "How long the egress gateway keeps acting on an actor's EgressPolicy before fetching it from ateapi again, which bounds the lag between a policy change and its effect on new requests. 0 disables the cache (concurrent callouts for one actor still share a fetch)")
++	fs.StringVar(&cfg.NativeTLSDestination, "native-tls-destination", "", "Enable only end-to-end TLS to this exact hostname:port, requiring an exact tls_passthrough actor policy and an identically pinned private Envoy TCP cluster. Requires --mode=egress, --egress-policy-cache-ttl=0, and no credential provider; empty preserves ordinary egress.")
+ 
+ 	// Egress credential injection (MITM leg). Only the egress gateway sets these,
+ 	// and only when injection is enabled: with no
+diff --git a/cmd/atenet/internal/router/config.go b/cmd/atenet/internal/router/config.go
+index 73a32b8df..648eedd47 100644
+--- a/cmd/atenet/internal/router/config.go
++++ b/cmd/atenet/internal/router/config.go
+@@ -21,6 +21,7 @@ import (
+ 
+ 	"github.com/spiffe/go-spiffe/v2/spiffeid"
+ 
++	"go.ate.dev/substrate/cmd/atenet/internal/router/egress"
+ 	"go.ate.dev/substrate/cmd/atenet/internal/router/ingress"
+ )
+ 
+@@ -178,6 +179,9 @@ type routerConfig struct {
+ 	// EgressPolicy, and so how long a policy change takes to bite. 0 disables
+ 	// the cache.
+ 	EgressPolicyCacheTTL time.Duration
++	// NativeTLSDestination enables only native TLS to one operator-pinned
++	// hostname:port. The private Envoy TCP cluster must pin the same address.
++	NativeTLSDestination string
+ 
+ 	// CredentialProvider configures egress credential injection on the MITM leg.
+ 	// Only the egress gateway sets it, and only when injection is enabled: a
+@@ -322,6 +326,14 @@ func (c routerConfig) validate() error {
+ 	if c.EgressPolicyCacheTTL < 0 {
+ 		return fmt.Errorf("--egress-policy-cache-ttl must not be negative, got %s (0 disables the cache)", c.EgressPolicyCacheTTL)
+ 	}
++	if c.NativeTLSDestination != "" {
++		if c.Mode != ModeEgress || c.atenetRouter() != atenetRouterEnvoy || c.EgressPolicyCacheTTL != 0 || len(c.CredentialProvider.Addresses) != 0 {
++			return fmt.Errorf("--native-tls-destination requires egress-only Envoy, zero policy cache TTL, and no credential provider")
++		}
++		if _, err := egress.NativeTLSDestination(c.NativeTLSDestination); err != nil {
++			return err
++		}
++	}
+ 	if c.DrainDelay < 0 {
+ 		return fmt.Errorf("--drain-delay must not be negative, got %s", c.DrainDelay)
+ 	}
+diff --git a/cmd/atenet/internal/router/config_test.go b/cmd/atenet/internal/router/config_test.go
+index 80e3737a1..3193d0514 100644
+--- a/cmd/atenet/internal/router/config_test.go
++++ b/cmd/atenet/internal/router/config_test.go
+@@ -528,3 +528,25 @@ func TestSetOtlpCollectorClearsPreviousCollector(t *testing.T) {
+ 		t.Errorf("buildTracing() = %v, want nil after a rejected address", tr)
+ 	}
+ }
++
++func TestNativeTLSConfig(t *testing.T) {
++	valid := routerConfig{Mode: ModeEgress, AtenetRouter: "envoy", NativeTLSDestination: "native.example.test:8443"}
++	if err := valid.validate(); err != nil {
++		t.Fatal(err)
++	}
++	for name, mutate := range map[string]func(*routerConfig){
++		"ingress":             func(c *routerConfig) { c.Mode = ModeIngress },
++		"agentgateway":        func(c *routerConfig) { c.AtenetRouter = "agentgateway" },
++		"cache":               func(c *routerConfig) { c.EgressPolicyCacheTTL = time.Second },
++		"provider":            func(c *routerConfig) { c.CredentialProvider.Addresses = []string{"provider:443"} },
++		"invalid destination": func(c *routerConfig) { c.NativeTLSDestination = "127.0.0.1:8443" },
++	} {
++		t.Run(name, func(t *testing.T) {
++			c := valid
++			mutate(&c)
++			if c.validate() == nil {
++				t.Fatal("unsafe native TLS config accepted")
++			}
++		})
++	}
++}
+diff --git a/cmd/atenet/internal/router/egress/egress.go b/cmd/atenet/internal/router/egress/egress.go
+index fa5e802d3..551b1d473 100644
+--- a/cmd/atenet/internal/router/egress/egress.go
++++ b/cmd/atenet/internal/router/egress/egress.go
+@@ -91,6 +91,9 @@ type Handler struct {
+ 	// A special case of a map consisting of a single entry with empty string
+ 	// ("") key will match all provider URIs.
+ 	providers map[string]credprovider.CredentialProviderClient
++	// nativeTLS, when set, restricts the handler to one pinned destination.
++	// See NewNativeTLS.
++	nativeTLS *egresspolicy.Destination
+ }
+ 
+ // New builds the egress handler. loadActorIdentityRoots yields the egress
+@@ -124,6 +127,9 @@ func (h *Handler) Direction() extproc.Direction { return extproc.DirectionEgress
+ // An empty chain name is a non-Envoy dataplane, which calls out for the
+ // CONNECT alone. Anything unrecognized is refused, not guessed.
+ func (h *Handler) HandleRequestHeaders(ctx context.Context, md *extproc.RequestMetadata) (extproc.Result, error) {
++	if h.nativeTLS != nil && md.Attribute(extproc.FilterChainNameAttribute) != extproc.EgressFilterChainName {
++		return extproc.Result{}, extproc.NewReqError(envoy_type.StatusCode_Forbidden, deniedBody)
++	}
+ 	switch leg := md.Attribute(extproc.FilterChainNameAttribute); leg {
+ 	case extproc.EgressFilterChainName, "":
+ 		return h.handleConnect(ctx, md, leg)
+@@ -189,6 +195,15 @@ func (h *Handler) handleConnect(ctx context.Context, md *extproc.RequestMetadata
+ 		return extproc.Result{}, err
+ 	}
+ 	rules := policy.SNIRules(dest.Port)
++	if h.nativeTLS != nil {
++		if err := h.validateNativeActor(ctx, md, ref); err != nil {
++			return extproc.Result{}, err
++		}
++		if dest.Port != h.nativeTLS.Port || !policy.AllowsExactTLSPassthrough(*h.nativeTLS) {
++			return extproc.Result{}, extproc.NewReqError(envoy_type.StatusCode_Forbidden, deniedBody)
++		}
++		rules = []egresspolicy.SNIRule{{Pattern: h.nativeTLS.Hostname, Mode: egresspolicy.SNIModePassthrough}}
++	}
+ 	dynamicMetadata, err := connectMetadata(dest, rules)
+ 	if err != nil {
+ 		return extproc.Result{}, err
+diff --git a/cmd/atenet/internal/router/egress/native_tls.go b/cmd/atenet/internal/router/egress/native_tls.go
+new file mode 100644
+index 000000000..8fae68ae7
+--- /dev/null
++++ b/cmd/atenet/internal/router/egress/native_tls.go
+@@ -0,0 +1,81 @@
++// Copyright 2026 The Agent Substrate Authors
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package egress
++
++import (
++	"context"
++	"crypto/x509"
++	"fmt"
++	"net"
++	"strconv"
++
++	envoy_type "github.com/envoyproxy/go-control-plane/envoy/type/v3"
++
++	"go.ate.dev/substrate/api/ateapi/v1"
++	"go.ate.dev/substrate/cmd/atenet/internal/router/extproc"
++	"go.ate.dev/substrate/internal/egresspolicy"
++	"go.ate.dev/substrate/internal/resources"
++	"go.ate.dev/substrate/internal/substratex509"
++)
++
++// NativeTLSDestination parses a canonical DNS hostname and explicit port. IP
++// literals, URL syntax, wildcards, and implicit ports cannot become upstreams.
++func NativeTLSDestination(address string) (egresspolicy.Destination, error) {
++	dest, err := egresspolicy.NormalizeAuthority(address)
++	if err != nil || dest.Hostname == "" || dest.IP.IsValid() || dest.Port == 0 ||
++		net.JoinHostPort(dest.Hostname, strconv.Itoa(int(dest.Port))) != address {
++		return egresspolicy.Destination{}, fmt.Errorf("--native-tls-destination requires a canonical DNS hostname:port")
++	}
++	return dest, nil
++}
++
++// NewNativeTLS serves one pinned native TLS destination only. Every CONNECT
++// rereads the actor and policy; there is no MITM credential provider or cache.
++// The private Envoy listener must map passthrough to the same fixed upstream.
++func NewNativeTLS(api ateapi.ControlClient, loadRoots func() (*x509.CertPool, error), address string) (*Handler, error) {
++	dest, err := NativeTLSDestination(address)
++	if err != nil {
++		return nil, err
++	}
++	h := New(api, loadRoots, 0, nil)
++	h.nativeTLS = &dest
++	return h, nil
++}
++
++// validateNativeActor binds the already verified peer to the current immutable
++// UID, after the policy lookup. A name reused since certificate issuance denies.
++func (h *Handler) validateNativeActor(ctx context.Context, md *extproc.RequestMetadata, ref resources.ActorRef) error {
++	if md.Attribute(agentgatewayClientCertificateAttribute) != "" {
++		return extproc.NewReqError(envoy_type.StatusCode_Forbidden, deniedBody)
++	}
++	chain, err := parseXFCCChain(md.Header(forwardedClientCertHeader))
++	if err != nil {
++		return extproc.NewReqError(envoy_type.StatusCode_Forbidden, deniedBody)
++	}
++	identity, err := substratex509.ActorIdentityFromCertificate(chain[0])
++	if err != nil || identity == nil || identity.Atespace != ref.Atespace || identity.ActorName != ref.Name {
++		return extproc.NewReqError(envoy_type.StatusCode_Forbidden, deniedBody)
++	}
++	actor, err := h.apiClient.GetActor(ctx, &ateapi.GetActorRequest{Actor: ref.ToObjectRef()})
++	if err != nil {
++		return mapEgressIdentityError(ref.Atespace, ref.Name, err)
++	}
++	if actor.GetMetadata().GetUid() != identity.ActorUid ||
++		resources.ActorRefFromActor(actor) != ref ||
++		actor.GetStatus().GetState() != ateapi.ActorState_ACTOR_STATE_RUNNING {
++		return extproc.NewReqError(envoy_type.StatusCode_Forbidden, deniedBody)
++	}
++	return nil
++}
+diff --git a/cmd/atenet/internal/router/egress/native_tls_integration_test.go b/cmd/atenet/internal/router/egress/native_tls_integration_test.go
+new file mode 100644
+index 000000000..683911d30
+--- /dev/null
++++ b/cmd/atenet/internal/router/egress/native_tls_integration_test.go
+@@ -0,0 +1,553 @@
++//go:build native_tls_integration
++
++// Copyright 2026 The Agent Substrate Authors
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package egress
++
++import (
++	"bufio"
++	"bytes"
++	"context"
++	"crypto/ecdsa"
++	"crypto/elliptic"
++	"crypto/rand"
++	"crypto/tls"
++	"crypto/x509"
++	"crypto/x509/pkix"
++	"encoding/pem"
++	"fmt"
++	"io"
++	"math/big"
++	"net"
++	"net/http"
++	"net/http/httptest"
++	"net/url"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"strconv"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"go.opentelemetry.io/otel/metric/noop"
++	"google.golang.org/grpc"
++	"google.golang.org/grpc/codes"
++	"google.golang.org/grpc/status"
++	"google.golang.org/protobuf/proto"
++
++	"go.ate.dev/substrate/api/ateapi/v1"
++	"go.ate.dev/substrate/cmd/atenet/internal/router/extproc"
++	"go.ate.dev/substrate/internal/substratex509"
++)
++
++// This explicit integration tier runs an actual Envoy binary with the built
++// dynamic module. Missing binaries fail; ordinary unit tests do not invoke it.
++// Only Control's actor/policy data is synthetic. Both TLS legs, XFCC sanitation,
++// ext_proc, policy metadata, SNI filter and fixed TCP cluster are real.
++func TestNativeTLSEnvoy(t *testing.T) {
++	binary := os.Getenv("SUBSTRATE_NATIVE_TLS_ENVOY")
++	if binary == "" {
++		t.Fatal("SUBSTRATE_NATIVE_TLS_ENVOY must name the built Envoy binary")
++	}
++	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
++	defer cancel()
++	ca := newTestCA(t, "gateway-ca")
++	originCA := newTestCA(t, "origin-ca")
++	actorCert := nativeTLSCert(t, ca, "localhost", &substratex509.ActorIdentity{Atespace: "foo", ActorName: "bar", ActorUid: testEgressActorUID})
++	gatewayCert := nativeTLSCert(t, ca, "localhost", nil)
++	originCert := nativeTLSCert(t, originCA, "localhost", nil)
++	var hits atomic.Int32
++	origin := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1); _, _ = io.WriteString(w, "pinned origin") }))
++	origin.TLS = &tls.Config{Certificates: []tls.Certificate{originCert}, MinVersion: tls.VersionTLS12}
++	origin.StartTLS()
++	defer origin.Close()
++	_, portText, err := net.SplitHostPort(origin.Listener.Addr().String())
++	if err != nil {
++		t.Fatal(err)
++	}
++	port, _ := strconv.Atoi(portText)
++	client := &nativeTLSControl{actor: nativeActor(), policy: passthroughPolicy(ports(int32(port)), "localhost")}
++	handler, err := NewNativeTLS(client, ca.loadRoots, net.JoinHostPort("localhost", portText))
++	if err != nil {
++		t.Fatal(err)
++	}
++	metric, err := extproc.NewRouteDurationHistogram(noop.NewMeterProvider().Meter("test"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	server := extproc.NewServer(0, metric, extproc.Handlers{extproc.DirectionEgress: handler}).NewGRPCServer()
++	listener, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer listener.Close()
++	defer server.Stop()
++	go func() { _ = server.Serve(listener) }()
++	dir := t.TempDir()
++	writeTLSBundle(t, dir, "gateway", gatewayCert)
++	if err := os.WriteFile(filepath.Join(dir, "ca.pem"), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.cert.Raw}), 0600); err != nil {
++		t.Fatal(err)
++	}
++	gatewayPort := freeNativeTLSPort(t)
++	_, extPort, _ := net.SplitHostPort(listener.Addr().String())
++	config := fmt.Sprintf(nativeTLSEnvoyConfig, gatewayPort, dir, dir, dir, extPort, port)
++	configPath := filepath.Join(dir, "envoy.yaml")
++	if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
++		t.Fatal(err)
++	}
++	cmd := exec.CommandContext(ctx, binary, "-c", configPath, "--disable-hot-restart", "--concurrency", "1", "--log-level", "error")
++	var output bytes.Buffer
++	cmd.Stdout = &output
++	cmd.Stderr = &output
++	if err := cmd.Start(); err != nil {
++		t.Fatal(err)
++	}
++	done := make(chan error, 1)
++	go func() { done <- cmd.Wait() }()
++	defer func() {
++		_ = cmd.Process.Kill()
++		<-done
++		if t.Failed() {
++			t.Log(output.String())
++		}
++	}()
++	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(gatewayPort))
++	deadline := time.Now().Add(10 * time.Second)
++	for {
++		conn, e := net.DialTimeout("tcp", address, 100*time.Millisecond)
++		if e == nil {
++			_ = conn.Close()
++			break
++		}
++		if time.Now().After(deadline) {
++			t.Fatal("Envoy did not listen")
++		}
++		time.Sleep(20 * time.Millisecond)
++	}
++	cases := []string{"allowed", "connect IP cannot redirect", "wrong actor", "recreated UID", "stopped actor", "revoked policy", "broad policy", "wrong SNI", "missing SNI", "wrong port", "cleartext", "forged XFCC"}
++	for _, name := range cases {
++		t.Run(name, func(t *testing.T) {
++			client.set(nativeActor(), passthroughPolicy(ports(int32(port)), "localhost"))
++			cert := actorCert
++			target := net.JoinHostPort("127.0.0.1", portText)
++			sni := "localhost"
++			switch name {
++			case "connect IP cannot redirect":
++				target = net.JoinHostPort("192.0.2.99", portText)
++			case "wrong actor", "forged XFCC":
++				cert = nativeTLSCert(t, ca, "localhost", &substratex509.ActorIdentity{Atespace: "foo", ActorName: "other", ActorUid: testEgressActorUID})
++			case "recreated UID":
++				a := nativeActor()
++				a.Metadata.Uid = "replacement"
++				client.set(a, passthroughPolicy(ports(int32(port)), "localhost"))
++			case "stopped actor":
++				a := nativeActor()
++				a.Status.State = ateapi.ActorState_ACTOR_STATE_SUSPENDED
++				client.set(a, passthroughPolicy(ports(int32(port)), "localhost"))
++			case "revoked policy":
++				client.set(nativeActor(), nil)
++			case "broad policy":
++				client.set(nativeActor(), passthroughPolicy(allPorts(), "*"))
++			case "wrong SNI":
++				sni = "other.example.test"
++			case "missing SNI":
++				sni = ""
++			case "wrong port":
++				target = net.JoinHostPort("127.0.0.1", strconv.Itoa(port+1))
++			}
++			before := hits.Load()
++			outer, err := tls.DialWithDialer(&net.Dialer{Timeout: 3 * time.Second}, "tcp", address, &tls.Config{RootCAs: ca.roots(), ServerName: "localhost", Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12})
++			if err != nil {
++				t.Fatal(err)
++			}
++			defer outer.Close()
++			_ = outer.SetDeadline(time.Now().Add(3 * time.Second))
++			header := ""
++			if name == "forged XFCC" {
++				leaf, _ := x509.ParseCertificate(actorCert.Certificate[0])
++				header = "X-Forwarded-Client-Cert: " + xfccHeader(leaf) + "\r\n"
++			}
++			_, err = fmt.Fprintf(outer, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n%s\r\n", target, target, header)
++			if err != nil {
++				t.Fatal(err)
++			}
++			response, err := http.ReadResponse(bufio.NewReader(outer), &http.Request{Method: "CONNECT"})
++			if err != nil {
++				t.Fatal(err)
++			}
++			allowed := name == "allowed" || name == "connect IP cannot redirect"
++			if response.StatusCode != http.StatusOK {
++				if allowed {
++					t.Fatalf("CONNECT denied: %d", response.StatusCode)
++				}
++				if hits.Load() != before {
++					t.Fatal("denied CONNECT reached origin")
++				}
++				return
++			}
++			if name == "cleartext" {
++				_, _ = io.WriteString(outer, "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
++				var b [1]byte
++				if n, e := outer.Read(b[:]); n != 0 || e == nil {
++					t.Fatal("cleartext was served")
++				}
++				if hits.Load() != before {
++					t.Fatal("cleartext reached origin")
++				}
++				return
++			}
++			inner := tls.Client(outer, &tls.Config{RootCAs: originCA.roots(), ServerName: sni, MinVersion: tls.VersionTLS12, InsecureSkipVerify: sni == ""}) // Missing SNI is a negative probe only.
++			err = inner.HandshakeContext(ctx)
++			if !allowed {
++				if err == nil {
++					t.Fatal("denied TLS completed")
++				}
++				if hits.Load() != before {
++					t.Fatal("denied TLS reached origin")
++				}
++				return
++			}
++			if err != nil {
++				t.Fatal(err)
++			}
++			if !bytes.Equal(inner.ConnectionState().PeerCertificates[0].Raw, originCert.Certificate[0]) {
++				t.Fatal("origin certificate was replaced")
++			}
++			_, err = io.WriteString(inner, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
++			if err != nil {
++				t.Fatal(err)
++			}
++			res, err := http.ReadResponse(bufio.NewReader(inner), &http.Request{Method: "GET"})
++			if err != nil {
++				t.Fatal(err)
++			}
++			body, err := io.ReadAll(res.Body)
++			_ = res.Body.Close()
++			if err != nil || string(body) != "pinned origin" {
++				t.Fatalf("origin response: %q %v", body, err)
++			}
++			if hits.Load() != before+1 {
++				t.Fatal("not exactly one origin request")
++			}
++		})
++	}
++}
++
++type nativeTLSControl struct {
++	ateapi.ControlClient
++	mu     sync.Mutex
++	actor  *ateapi.Actor
++	policy *ateapi.EgressPolicy
++}
++
++func (c *nativeTLSControl) set(a *ateapi.Actor, p *ateapi.EgressPolicy) {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	c.actor = a
++	c.policy = p
++}
++func (c *nativeTLSControl) GetActor(_ context.Context, r *ateapi.GetActorRequest, _ ...grpc.CallOption) (*ateapi.Actor, error) {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	if r.Actor.Name != c.actor.Metadata.Name || r.Actor.Atespace != c.actor.Metadata.Atespace {
++		return nil, status.Error(codes.NotFound, "absent")
++	}
++	return proto.Clone(c.actor).(*ateapi.Actor), nil
++}
++func (c *nativeTLSControl) GetActorEgressPolicy(context.Context, *ateapi.GetActorEgressPolicyRequest, ...grpc.CallOption) (*ateapi.EgressPolicy, error) {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	if c.policy == nil {
++		return nil, status.Error(codes.NotFound, "absent")
++	}
++	return proto.Clone(c.policy).(*ateapi.EgressPolicy), nil
++}
++func freeNativeTLSPort(t *testing.T) int {
++	t.Helper()
++	l, e := net.Listen("tcp", "127.0.0.1:0")
++	if e != nil {
++		t.Fatal(e)
++	}
++	defer l.Close()
++	return l.Addr().(*net.TCPAddr).Port
++}
++func nativeTLSCert(t *testing.T, ca *testCA, host string, identity *substratex509.ActorIdentity) tls.Certificate {
++	t.Helper()
++	key, e := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
++	if e != nil {
++		t.Fatal(e)
++	}
++	serial, e := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 120))
++	if e != nil {
++		t.Fatal(e)
++	}
++	c := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: host}, DNSNames: []string{host}, NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}}
++	if identity != nil {
++		u, _ := url.Parse("spiffe://substrate-actor.local/worker-for-actor/" + identity.Atespace + "/" + identity.ActorName)
++		c.URIs = []*url.URL{u}
++		if e := substratex509.AddActorIdentityToCertificate(identity, c); e != nil {
++			t.Fatal(e)
++		}
++	}
++	der, e := x509.CreateCertificate(rand.Reader, c, ca.cert, &key.PublicKey, ca.key)
++	if e != nil {
++		t.Fatal(e)
++	}
++	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
++}
++func writeTLSBundle(t *testing.T, dir, name string, c tls.Certificate) {
++	t.Helper()
++	key, e := x509.MarshalPKCS8PrivateKey(c.PrivateKey)
++	if e != nil {
++		t.Fatal(e)
++	}
++	for suffix, b := range map[string][]byte{".crt": pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.Certificate[0]}), ".key": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: key})} {
++		if e := os.WriteFile(filepath.Join(dir, name+suffix), b, 0600); e != nil {
++			t.Fatal(e)
++		}
++	}
++}
++
++const nativeTLSEnvoyConfig = `node:
++  id: atenet-egress
++  cluster: atenet-egress
++bootstrap_extensions:
++- name: envoy.bootstrap.internal_listener
++  typed_config:
++    '@type': type.googleapis.com/envoy.extensions.bootstrap.internal_listener.v3.InternalListener
++static_resources:
++  listeners:
++  - name: egress
++    address:
++      socket_address:
++        address: 127.0.0.1
++        port_value: %d
++    filter_chains:
++    - name: egress
++      transport_socket:
++        name: envoy.transport_sockets.tls
++        typed_config:
++          '@type': type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
++          require_client_certificate: true
++          common_tls_context:
++            validation_context:
++              trusted_ca:
++                filename: %s/ca.pem
++            tls_certificates:
++            - certificate_chain:
++                filename: %s/gateway.crt
++              private_key:
++                filename: %s/gateway.key
++      filters:
++      - name: envoy.filters.network.http_connection_manager
++        typed_config:
++          '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
++          stat_prefix: egress_connect
++          codec_type: HTTP1
++          upgrade_configs:
++          - upgrade_type: CONNECT
++          forward_client_cert_details: SANITIZE_SET
++          set_current_client_cert_details:
++            chain: true
++          route_config:
++            name: connect_route
++            virtual_hosts:
++            - name: connect
++              domains:
++              - '*'
++              routes:
++              - match:
++                  connect_matcher: {}
++                route:
++                  cluster: mitm_internal
++                  timeout: 0s
++                  upgrade_configs:
++                  - upgrade_type: CONNECT
++                    connect_config: {}
++          http_filters:
++          - name: envoy.filters.http.set_filter_state
++            typed_config:
++              '@type': type.googleapis.com/envoy.extensions.filters.http.set_filter_state.v3.Config
++              on_request_headers:
++              - object_key: dev.ate.actor.identity
++                factory_key: envoy.hashable_string
++                shared_with_upstream: TRANSITIVE
++                skip_if_empty: true
++                format_string:
++                  text_format_source:
++                    inline_string: '%%DOWNSTREAM_PEER_URI_SAN%%'
++                  omit_empty_values: true
++              - object_key: dev.ate.connect.authority
++                factory_key: envoy.hashable_string
++                shared_with_upstream: TRANSITIVE
++                skip_if_empty: true
++                format_string:
++                  text_format_source:
++                    inline_string: '%%REQ(:AUTHORITY)%%'
++                  omit_empty_values: true
++          - name: envoy.filters.http.ext_proc
++            typed_config:
++              '@type': type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
++              stat_prefix: egress_identity
++              grpc_service:
++                envoy_grpc:
++                  cluster_name: ext_proc_server
++                timeout: 2s
++              failure_mode_allow: false
++              message_timeout: 5s
++              request_attributes:
++              - xds.filter_chain_name
++              processing_mode:
++                request_header_mode: SEND
++                response_header_mode: SKIP
++                request_body_mode: NONE
++                response_body_mode: NONE
++                request_trailer_mode: SKIP
++                response_trailer_mode: SKIP
++              mutation_rules:
++                disallow_system: true
++                disallow_is_error: true
++              metadata_options:
++                receiving_namespaces:
++                  untyped:
++                  - dev.ate.egress
++                  - dev.ate.policy.egress
++          - name: envoy.filters.http.dynamic_modules
++            typed_config:
++              '@type': type.googleapis.com/envoy.extensions.filters.http.dynamic_modules.v3.DynamicModuleFilter
++              dynamic_module_config:
++                name: envoy_substrate_egress_policy
++              filter_name: envoy_substrate_egress_policy_store
++          - name: envoy.filters.http.set_filter_state
++            typed_config:
++              '@type': type.googleapis.com/envoy.extensions.filters.http.set_filter_state.v3.Config
++              on_request_headers:
++              - object_key: dev.ate.policy.egress.hash
++                factory_key: envoy.hashable_string
++                skip_if_empty: true
++                shared_with_upstream: ONCE
++                format_string:
++                  text_format_source:
++                    inline_string: '%%FILTER_STATE(dev.ate.policy.egress.hash.not_shared:PLAIN)%%'
++                  omit_empty_values: true
++          - name: envoy.filters.http.router
++            typed_config:
++              '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
++  - name: mitm_listener
++    stat_prefix: mitm
++    internal_listener: {}
++    listener_filters_timeout: 1s
++    continue_on_listener_filters_timeout: true
++    listener_filters:
++    - name: envoy.filters.listener.tls_inspector
++      typed_config:
++        '@type': type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector
++    - name: envoy.filters.listener.http_inspector
++      typed_config:
++        '@type': type.googleapis.com/envoy.extensions.filters.listener.http_inspector.v3.HttpInspector
++    - name: envoy.filters.listener.dynamic_modules
++      typed_config:
++        '@type': type.googleapis.com/envoy.extensions.filters.listener.dynamic_modules.v3.DynamicModuleListenerFilter
++        dynamic_module_config:
++          name: envoy_substrate_egress_policy
++        filter_name: envoy_substrate_egress_policy
++    filter_chain_matcher:
++      matcher_tree:
++        input:
++          name: filter_state
++          typed_config:
++            '@type': type.googleapis.com/envoy.extensions.matching.common_inputs.network.v3.FilterStateInput
++            key: dev.ate.egress.filter_chain
++        exact_match_map:
++          map:
++            passthrough:
++              action:
++                name: native_tls
++                typed_config:
++                  '@type': type.googleapis.com/google.protobuf.StringValue
++                  value: native_tls
++    filter_chains:
++    - name: native_tls
++      filters:
++      - name: envoy.filters.network.tcp_proxy
++        typed_config:
++          '@type': type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
++          stat_prefix: native_tls
++          cluster: native_tls
++  clusters:
++  - name: mitm_internal
++    connect_timeout: 1s
++    typed_extension_protocol_options:
++      envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
++        '@type': type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
++        common_http_protocol_options:
++          max_requests_per_connection: 1
++        explicit_http_config:
++          http_protocol_options: {}
++    transport_socket:
++      name: envoy.transport_sockets.internal_upstream
++      typed_config:
++        '@type': type.googleapis.com/envoy.extensions.transport_sockets.internal_upstream.v3.InternalUpstreamTransport
++        transport_socket:
++          name: envoy.transport_sockets.raw_buffer
++          typed_config:
++            '@type': type.googleapis.com/envoy.extensions.transport_sockets.raw_buffer.v3.RawBuffer
++    load_assignment:
++      cluster_name: mitm_internal
++      endpoints:
++      - lb_endpoints:
++        - endpoint:
++            address:
++              envoy_internal_address:
++                server_listener_name: mitm_listener
++  - name: ext_proc_server
++    type: STATIC
++    lb_policy: ROUND_ROBIN
++    connect_timeout: 1s
++    typed_extension_protocol_options:
++      envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
++        '@type': type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
++        explicit_http_config:
++          http2_protocol_options: {}
++    load_assignment:
++      cluster_name: ext_proc_server
++      endpoints:
++      - lb_endpoints:
++        - endpoint:
++            address:
++              socket_address:
++                address: 127.0.0.1
++                port_value: %s
++  - name: native_tls
++    type: STRICT_DNS
++    dns_lookup_family: V4_ONLY
++    connect_timeout: 1s
++    load_assignment:
++      cluster_name: native_tls
++      endpoints:
++      - lb_endpoints:
++        - endpoint:
++            address:
++              socket_address:
++                address: localhost
++                port_value: %d
++`
++
++func (ca *testCA) roots() *x509.CertPool {
++	pool, _ := ca.loadRoots()
++	return pool
++}
+diff --git a/cmd/atenet/internal/router/egress/native_tls_test.go b/cmd/atenet/internal/router/egress/native_tls_test.go
+new file mode 100644
+index 000000000..6df672f8c
+--- /dev/null
++++ b/cmd/atenet/internal/router/egress/native_tls_test.go
+@@ -0,0 +1,128 @@
++// Copyright 2026 The Agent Substrate Authors
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package egress
++
++import (
++	"context"
++	"crypto/x509"
++	"slices"
++	"testing"
++
++	envoy_type "github.com/envoyproxy/go-control-plane/envoy/type/v3"
++	"go.ate.dev/substrate/api/ateapi/v1"
++	"go.ate.dev/substrate/cmd/atenet/internal/router/extproc"
++	"go.ate.dev/substrate/internal/egresspolicy"
++	"go.ate.dev/substrate/internal/substratex509"
++	"google.golang.org/protobuf/types/known/structpb"
++)
++
++const nativeDestination = "native.example.test:8443"
++
++func nativeActor() *ateapi.Actor {
++	a := runningActor()
++	a.Metadata.Atespace, a.Metadata.Name = "foo", "bar"
++	return a
++}
++
++func nativeIdentity(t *testing.T, c *x509.Certificate) {
++	t.Helper()
++	if err := substratex509.AddActorIdentityToCertificate(&substratex509.ActorIdentity{
++		Atespace: "foo", ActorName: "bar", ActorUid: testEgressActorUID,
++	}, c); err != nil {
++		t.Fatal(err)
++	}
++}
++
++func TestNativeTLSDestination(t *testing.T) {
++	if _, err := NativeTLSDestination(nativeDestination); err != nil {
++		t.Fatal(err)
++	}
++	for _, value := range []string{"", "native.example.test", "native.example.test:0", "*.example.test:8443", "127.0.0.1:8443", "[::1]:8443", "https://native.example.test:8443", "NATIVE.example.test:8443", "native.example.test.:8443", "native.example.test:08443"} {
++		t.Run(value, func(t *testing.T) {
++			if _, err := NativeTLSDestination(value); err == nil {
++				t.Fatal("invalid destination accepted")
++			}
++		})
++	}
++}
++
++func TestNativeTLSRequiresExactCurrentAuthority(t *testing.T) {
++	ca := newTestCA(t, "native-actor-ca")
++	for _, name := range []string{"allowed", "missing identity", "changed actor UID", "wrong actor", "not running", "missing policy", "wildcard", "all ports", "multiple ports", "multiple names", "https rule", "wrong policy port", "wrong destination port", "cleartext leg", "no leg"} {
++		t.Run(name, func(t *testing.T) {
++			client := &egressMockClient{actor: nativeActor(), policy: passthroughPolicy(ports(8443), "native.example.test")}
++			options := actorCertOptions{mutate: func(c *x509.Certificate) { nativeIdentity(t, c) }}
++			if name == "missing identity" {
++				options.mutate = nil
++			}
++			leaf := ca.issueActorCert(t, "spiffe://substrate-actor.local/worker-for-actor/foo/bar", options)
++			md := egressMetadata(xfccHeader(leaf))
++			md.Host = "192.0.2.1:8443"
++			switch name {
++			case "changed actor UID":
++				client.actor.Metadata.Uid = "recreated-actor"
++			case "wrong actor":
++				client.actor.Metadata.Name = "different"
++			case "not running":
++				client.actor.Status.State = ateapi.ActorState_ACTOR_STATE_SUSPENDED
++			case "missing policy":
++				client.policy = nil
++			case "wildcard":
++				client.policy = passthroughPolicy(ports(8443), "*.example.test")
++			case "all ports":
++				client.policy = passthroughPolicy(allPorts(), "native.example.test")
++			case "multiple ports":
++				client.policy = passthroughPolicy(ports(443, 8443), "native.example.test")
++			case "multiple names":
++				client.policy = passthroughPolicy(ports(8443), "native.example.test", "other.example.test")
++			case "https rule":
++				client.policy = httpsPolicyOnPorts(ports(8443), "native.example.test")
++			case "wrong policy port":
++				client.policy = passthroughPolicy(ports(443), "native.example.test")
++			case "wrong destination port":
++				md.Host = "192.0.2.1:443"
++			case "cleartext leg":
++				md.Attributes["envoy.filters.http.ext_proc"].Fields[extproc.FilterChainNameAttribute] = structpb.NewStringValue(extproc.EgressCleartextFilterChainName)
++			}
++			if name == "no leg" {
++				md = agentgatewayEgressMetadata("")
++			}
++			h, err := NewNativeTLS(client, ca.loadRoots, nativeDestination)
++			if err != nil {
++				t.Fatal(err)
++			}
++			result, err := h.HandleRequestHeaders(context.Background(), md)
++			if name != "allowed" {
++				wantStatus(t, err, envoy_type.StatusCode_Forbidden)
++				return
++			}
++			if err != nil {
++				t.Fatal(err)
++			}
++			if !slices.Equal(sniRulesOf(t, result), []egresspolicy.SNIRule{{Pattern: "native.example.test", Mode: egresspolicy.SNIModePassthrough}}) {
++				t.Fatal("not exact passthrough")
++			}
++			if result.Target != "" {
++				t.Fatal("request-controlled upstream")
++			}
++			client.policy = nil
++			_, err = h.HandleRequestHeaders(context.Background(), md)
++			wantStatus(t, err, envoy_type.StatusCode_Forbidden)
++			if client.policyCalls.Load() != 2 {
++				t.Fatal("policy was cached")
++			}
++		})
++	}
++}
+diff --git a/cmd/atenet/internal/router/router.go b/cmd/atenet/internal/router/router.go
+index c559ea4d4..7fcdc48b4 100644
+--- a/cmd/atenet/internal/router/router.go
++++ b/cmd/atenet/internal/router/router.go
+@@ -256,6 +256,12 @@ func (s *RouterServer) Run(ctx context.Context) error {
+ 		}
+ 
+ 		egressHandler := egress.New(s.apiClient, loadActorIdentityRoots, s.cfg.EgressPolicyCacheTTL, providers)
++		if s.cfg.NativeTLSDestination != "" {
++			egressHandler, err = egress.NewNativeTLS(s.apiClient, loadActorIdentityRoots, s.cfg.NativeTLSDestination)
++			if err != nil {
++				return err
++			}
++		}
+ 		handlers[egressHandler.Direction()] = egressHandler
+ 	}
+ 
+diff --git a/docs/guides/native-tls-egress.md b/docs/guides/native-tls-egress.md
+new file mode 100644
+index 000000000..8bd9e8b89
+--- /dev/null
++++ b/docs/guides/native-tls-egress.md
+@@ -0,0 +1,40 @@
++# Native TLS egress
++
++`--native-tls-destination=HOST:PORT` turns an egress gateway into a gateway for
++one pinned TLS destination. The origin certificate reaches the actor unchanged,
++and the gateway never terminates TLS or injects credentials.
++
++Ordinary `tls_passthrough` relays to the name in the SNI. This mode instead
++relays to a static address configured on the gateway, so an actor can name only
++the one destination.
++
++## Configure the gateway
++
++Run atenet with `--mode=egress --atenet-dataplane=envoy
++--egress-policy-cache-ttl=0 --native-tls-destination=HOST:PORT` and no
++credential provider. HOST is a canonical DNS name, and the port is explicit.
++
++Configure the inner listener with one `passthrough` chain that proxies to a TCP
++cluster whose static DNS address is the same HOST:PORT. Leave out the default,
++MITM, cleartext, dynamic forward proxy and original-destination chains.
++`TestNativeTLSEnvoy` holds a complete minimal listener. Restrict the pod's
++network egress to the same address as well.
++
++## What each CONNECT checks
++
++- The actor certificate chains to the actor-identity CA.
++- The UID in the certificate's actor identity extension matches the current
++  `RUNNING` actor, so a reused actor name is denied.
++- The actor has a `tls_passthrough` rule with exactly that hostname and that one
++  port. Wildcards, all ports and extra names deny.
++- The CONNECT address is not used to pick the upstream.
++
++Policy is read on every CONNECT. An open tunnel stays open after its policy
++changes, so the origin API must authenticate each request itself.
++
++## Test
++
++`hack/test-native-tls.sh` builds the Envoy image and runs `TestNativeTLSEnvoy`
++with no network access. The test checks that the origin certificate bytes arrive
++unchanged and that wrong actors, stale UIDs, stopped actors, broad policies,
++wrong or missing SNI, wrong ports, cleartext and forged XFCC headers are denied.
+diff --git a/hack/test-native-tls.sh b/hack/test-native-tls.sh
+new file mode 100755
+index 000000000..72cf662f2
+--- /dev/null
++++ b/hack/test-native-tls.sh
+@@ -0,0 +1,42 @@
++#!/usr/bin/env bash
++
++# Copyright 2026 The Agent Substrate Authors
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#      http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++# Runs the native TLS integration tests against the real Envoy dataplane image.
++# Needs Docker and Go. Fails if the Envoy binary is missing.
++
++set -o errexit -o nounset -o pipefail
++
++ROOT="$(git rev-parse --show-toplevel)"
++cd "${ROOT}"
++
++case "$(uname -m)" in
++  x86_64) arch=amd64 ;;
++  arm64 | aarch64) arch=arm64 ;;
++  *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
++esac
++
++test_dir="$(mktemp -d)"
++trap 'rm -rf "${test_dir}"' EXIT
++
++docker build --platform "linux/${arch}" --iidfile "${test_dir}/image" \
++  -f cmd/dataplane/envoy/Dockerfile cmd/dataplane/envoy
++GOOS=linux GOARCH="${arch}" CGO_ENABLED=0 go test -c -tags=native_tls_integration \
++  -o "${test_dir}/native-tls.test" ./cmd/atenet/internal/router/egress
++docker run --rm --platform "linux/${arch}" --network none --cap-drop ALL --read-only --tmpfs /tmp \
++  -e SUBSTRATE_NATIVE_TLS_ENVOY=/usr/local/bin/envoy \
++  -v "${test_dir}/native-tls.test:/native-tls.test:ro" \
++  --entrypoint /native-tls.test "$(cat "${test_dir}/image")" \
++  -test.run '^TestNativeTLSEnvoy$' -test.v -test.timeout 120s
+diff --git a/internal/egresspolicy/egresspolicy.go b/internal/egresspolicy/egresspolicy.go
+index 23de4a0e9..8f1d7cfdb 100644
+--- a/internal/egresspolicy/egresspolicy.go
++++ b/internal/egresspolicy/egresspolicy.go
+@@ -174,6 +174,22 @@ const (
+ 	SNIModePassthrough SNIMode = "passthrough"
+ )
+ 
++// AllowsExactTLSPassthrough requires a rule naming only the pinned host and
++// port. Broad wildcard or multi-destination grants do not enable native TLS.
++func (p *Policy) AllowsExactTLSPassthrough(dest Destination) bool {
++	if dest.Hostname == "" || dest.Port == 0 || dest.IP.IsValid() {
++		return false
++	}
++	for _, rule := range p.rules {
++		if rule.protocol == protocolTLSPassthrough && !rule.anyPort &&
++			len(rule.ports) == 1 && rule.ports[0] == dest.Port &&
++			len(rule.patterns) == 1 && rule.patterns[0].String() == dest.Hostname {
++			return true
++		}
++	}
++	return false
++}
++
+ // SNIRule is an SNI pattern and the mode applied when it matches first.
+ type SNIRule struct {
+ 	Pattern string
+-- 
+2.54.0
+

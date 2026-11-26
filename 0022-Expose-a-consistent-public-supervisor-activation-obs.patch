@@ -1,0 +1,411 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Zach Taylor <zctaylor.work@gmail.com>
+Date: Thu, 26 Nov 2026 17:29:30 -0500
+Subject: [PATCH 22/30] Expose a consistent public supervisor activation
+ observation
+
+kubectl ate get supervisor-activation reads the actor, its template and
+the actor again, and prints the public activation identity as JSON only
+when all three reads agree. A caller can then compare the running
+activation with its own records without seeing environment values or
+any token.
+
+Fork-Topic: fabriek-bootstrap
+Fork-Upstream: fork-only
+---
+ .../internal/cmd/supervisor_activation.go     | 161 ++++++++++++++++
+ .../cmd/supervisor_activation_test.go         | 181 ++++++++++++++++++
+ docs/reference/kubectl-ate.md                 |  21 ++
+ 3 files changed, 363 insertions(+)
+ create mode 100644 cmd/kubectl-ate/internal/cmd/supervisor_activation.go
+ create mode 100644 cmd/kubectl-ate/internal/cmd/supervisor_activation_test.go
+
+diff --git a/cmd/kubectl-ate/internal/cmd/supervisor_activation.go b/cmd/kubectl-ate/internal/cmd/supervisor_activation.go
+new file mode 100644
+index 000000000..ae0126d20
+--- /dev/null
++++ b/cmd/kubectl-ate/internal/cmd/supervisor_activation.go
+@@ -0,0 +1,161 @@
++// Copyright 2026 The Agent Substrate Authors
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package cmd
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"io"
++	"time"
++
++	"github.com/spf13/cobra"
++	"go.ate.dev/substrate/api/ateapi/v1"
++	"go.ate.dev/substrate/internal/supervisorbootstrap"
++	"google.golang.org/grpc"
++	"google.golang.org/protobuf/proto"
++	"k8s.io/apimachinery/pkg/api/resource"
++)
++
++var supervisorAtespace string
++
++var getSupervisorActivationCmd = &cobra.Command{
++	Use:   "supervisor-activation NAME",
++	Short: "Read a protected supervisor's current public identity as JSON",
++	Args:  cobra.ExactArgs(1),
++	RunE: func(cmd *cobra.Command, args []string) error {
++		if supervisorAtespace == "" || outputFmt != "json" {
++			return usageErrorf("supervisor-activation requires --atespace and --output=json")
++		}
++		ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Second)
++		defer cancel()
++		cmd.SetContext(ctx)
++		client, err := newAPIClient(cmd)
++		if err != nil {
++			return errors.New("supervisor activation connection unavailable")
++		}
++		defer client.Close()
++		return writeSupervisorObservation(ctx, client, &ateapi.ObjectRef{Atespace: supervisorAtespace, Name: args[0]}, cmd.OutOrStdout())
++	},
++}
++
++type supervisorReader interface {
++	GetActor(context.Context, *ateapi.GetActorRequest, ...grpc.CallOption) (*ateapi.Actor, error)
++	GetActorTemplate(context.Context, *ateapi.GetActorTemplateRequest, ...grpc.CallOption) (*ateapi.ActorTemplate, error)
++}
++
++type supervisorObservation struct {
++	SchemaVersion string                       `json:"schema_version"`
++	Atespace      string                       `json:"atespace"`
++	ActorName     string                       `json:"actor_name"`
++	ActorUID      string                       `json:"actor_uid"`
++	State         string                       `json:"state"`
++	Assignment    supervisorAssignment         `json:"assignment"`
++	Activation    *ateapi.SupervisorActivation `json:"activation"`
++	Template      supervisorTemplate           `json:"template"`
++}
++
++type supervisorAssignment struct {
++	WorkerUID string `json:"worker_uid"`
++	NodeName  string `json:"node_name"`
++}
++
++type supervisorTemplate struct {
++	Atespace       string            `json:"atespace"`
++	Name           string            `json:"name"`
++	UID            string            `json:"uid"`
++	Digest         string            `json:"digest"`
++	ResourceLimits map[string]string `json:"resource_limits"`
++}
++
++// Only public identity is emitted. RPC and validation errors deliberately omit
++// remote messages and template values, which may contain credentials.
++func writeSupervisorObservation(ctx context.Context, client supervisorReader, ref *ateapi.ObjectRef, out io.Writer) error {
++	request := &ateapi.GetActorRequest{Actor: ref}
++	first, err := client.GetActor(ctx, request)
++	if err != nil || !matchesSupervisorActor(first, ref) {
++		return errors.New("supervisor actor unavailable")
++	}
++	templateRef := first.GetActorTemplate()
++	template, err := client.GetActorTemplate(ctx, &ateapi.GetActorTemplateRequest{ActorTemplate: templateRef})
++	if err != nil || template.GetMetadata().GetAtespace() != templateRef.GetAtespace() || template.GetMetadata().GetName() != templateRef.GetName() {
++		return errors.New("supervisor template unavailable")
++	}
++	observation, err := describeSupervisor(first, template)
++	if err != nil {
++		return err
++	}
++	last, err := client.GetActor(ctx, request)
++	if err != nil || !proto.Equal(first, last) {
++		return errors.New("supervisor actor changed during observation")
++	}
++	encoded, err := json.Marshal(observation)
++	if err != nil || len(encoded) > 16384 {
++		return errors.New("supervisor observation unavailable")
++	}
++	_, err = out.Write(append(encoded, '\n'))
++	return err
++}
++
++func matchesSupervisorActor(actor *ateapi.Actor, ref *ateapi.ObjectRef) bool {
++	m := actor.GetMetadata()
++	t := actor.GetActorTemplate()
++	return ref.GetAtespace() != "" && ref.GetName() != "" && m.GetAtespace() == ref.GetAtespace() && m.GetName() == ref.GetName() && m.GetUid() != "" && m.GetVersion() > 0 && t.GetAtespace() != "" && t.GetName() != ""
++}
++
++func describeSupervisor(actor *ateapi.Actor, template *ateapi.ActorTemplate) (*supervisorObservation, error) {
++	expected, err := supervisorbootstrap.Describe(template)
++	actual := actor.GetStatus().GetSupervisorActivation()
++	assignment := actor.GetStatus().GetWorkerAssignment()
++	if err != nil || expected == nil || expected.GetTemplateUid() == "" || actual.GetActivationId() == "" || actual.GetWorkerUid() == "" || assignment.GetWorkerPodUid() != actual.GetWorkerUid() || assignment.GetNodeName() == "" {
++		return nil, errors.New("protected supervisor identity unavailable")
++	}
++	expected.ActivationId, expected.WorkerUid = actual.ActivationId, actual.WorkerUid
++	if !proto.Equal(expected, actual) {
++		return nil, errors.New("supervisor activation differs from current template")
++	}
++	limits, err := supervisorLimits(template.GetContainers()[0].GetResources())
++	if err != nil {
++		return nil, err
++	}
++	m := actor.GetMetadata()
++	t := template.GetMetadata()
++	return &supervisorObservation{
++		SchemaVersion: "substrate.supervisor-observation/v1",
++		Atespace:      m.GetAtespace(), ActorName: m.GetName(), ActorUID: m.GetUid(),
++		State:      actor.GetStatus().GetState().String(),
++		Assignment: supervisorAssignment{WorkerUID: assignment.GetWorkerPodUid(), NodeName: assignment.GetNodeName()},
++		Activation: actual,
++		Template:   supervisorTemplate{Atespace: t.GetAtespace(), Name: t.GetName(), UID: t.GetUid(), Digest: expected.GetTemplateDigest(), ResourceLimits: limits},
++	}, nil
++}
++
++// supervisorLimits renders the container limits as canonical Kubernetes
++// quantities, for example 500m and 512Mi. Both limits must be positive.
++func supervisorLimits(requirements *ateapi.ResourceRequirements) (map[string]string, error) {
++	cpu, memory := requirements.GetLimits().GetCpuMillicores(), requirements.GetLimits().GetMemoryBytes()
++	if cpu <= 0 || memory <= 0 {
++		return nil, errors.New("supervisor resource limits unavailable")
++	}
++	return map[string]string{
++		"cpu":    resource.NewMilliQuantity(cpu, resource.DecimalSI).String(),
++		"memory": resource.NewQuantity(memory, resource.BinarySI).String(),
++	}, nil
++}
++
++func init() {
++	getSupervisorActivationCmd.Flags().StringVarP(&supervisorAtespace, "atespace", "a", "", "Atespace of the protected actor")
++	getCmd.AddCommand(getSupervisorActivationCmd)
++}
+diff --git a/cmd/kubectl-ate/internal/cmd/supervisor_activation_test.go b/cmd/kubectl-ate/internal/cmd/supervisor_activation_test.go
+new file mode 100644
+index 000000000..245f7d9aa
+--- /dev/null
++++ b/cmd/kubectl-ate/internal/cmd/supervisor_activation_test.go
+@@ -0,0 +1,181 @@
++// Copyright 2026 The Agent Substrate Authors
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package cmd
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"errors"
++	"reflect"
++	"strings"
++	"testing"
++
++	"go.ate.dev/substrate/api/ateapi/v1"
++	"go.ate.dev/substrate/internal/supervisorbootstrap"
++	"google.golang.org/grpc"
++	"google.golang.org/protobuf/proto"
++)
++
++type fakeSupervisorReader struct {
++	actor, last *ateapi.Actor
++	template    *ateapi.ActorTemplate
++	calls       []string
++	errAt       int
++}
++
++func (f *fakeSupervisorReader) GetActor(_ context.Context, request *ateapi.GetActorRequest, _ ...grpc.CallOption) (*ateapi.Actor, error) {
++	f.calls = append(f.calls, "actor:"+request.GetActor().GetAtespace()+"/"+request.GetActor().GetName())
++	if len(f.calls) == f.errAt {
++		return nil, errors.New("secret remote diagnostic")
++	}
++	if len(f.calls) > 1 {
++		return proto.CloneOf(f.last), nil
++	}
++	return proto.CloneOf(f.actor), nil
++}
++
++func (f *fakeSupervisorReader) GetActorTemplate(_ context.Context, request *ateapi.GetActorTemplateRequest, _ ...grpc.CallOption) (*ateapi.ActorTemplate, error) {
++	f.calls = append(f.calls, "template:"+request.GetActorTemplate().GetAtespace()+"/"+request.GetActorTemplate().GetName())
++	if len(f.calls) == f.errAt {
++		return nil, errors.New("secret remote diagnostic")
++	}
++	return proto.CloneOf(f.template), nil
++}
++
++func supervisorFixture(t *testing.T) *fakeSupervisorReader {
++	t.Helper()
++	template := &ateapi.ActorTemplate{
++		Metadata: &ateapi.ResourceMetadata{Atespace: "factory", Name: "template", Uid: "template-uid", Version: 1},
++		Containers: []*ateapi.Container{{
++			Name: "guest", Image: "worker@sha256:" + strings.Repeat("a", 64), Command: []string{"/usr/local/bin/ax-task-runner"},
++			Env:          []*ateapi.EnvVar{{Name: "FACTORY_NATIVE_LAUNCH_DIGEST", Value: "sha256:" + strings.Repeat("b", 64)}, {Name: "SECRET_MARKER", Value: "never-print-this"}},
++			VolumeMounts: []*ateapi.VolumeMount{{Name: "protected", MountPath: supervisorbootstrap.MountPath}},
++			Resources:    &ateapi.ResourceRequirements{Limits: &ateapi.Resources{CpuMillicores: 500, MemoryBytes: 512 << 20}},
++		}},
++		Volumes:        []*ateapi.Volume{{Name: "protected", SystemInfo: &ateapi.SystemInfoVolumeSource{DataSources: []*ateapi.SystemInfoDataSource{{SupervisorBootstrap: &ateapi.SupervisorBootstrapDataSource{Profile: supervisorbootstrap.Profile}}}}}},
++		SnapshotConfig: &ateapi.SnapshotConfig{PreferredFidelity: ateapi.SnapshotFidelity_SNAPSHOT_FIDELITY_ROOTFS},
++	}
++	activation, err := supervisorbootstrap.Describe(template)
++	if err != nil {
++		t.Fatal(err)
++	}
++	activation.ActivationId, activation.WorkerUid = "activation-uid", "worker-uid"
++	actor := &ateapi.Actor{
++		Metadata:      &ateapi.ResourceMetadata{Atespace: "factory", Name: "actor", Uid: "actor-uid", Version: 7},
++		ActorTemplate: &ateapi.ObjectRef{Atespace: "factory", Name: "template"},
++		Status: &ateapi.ActorStatus{State: ateapi.ActorState_ACTOR_STATE_RUNNING, SupervisorActivation: activation,
++			WorkerAssignment: &ateapi.WorkerAssignment{WorkerPodUid: "worker-uid", NodeName: "worker-node"}},
++	}
++	return &fakeSupervisorReader{actor: actor, last: proto.CloneOf(actor), template: template}
++}
++
++func observeSupervisor(f *fakeSupervisorReader) (string, error) {
++	var out bytes.Buffer
++	err := writeSupervisorObservation(context.Background(), f, &ateapi.ObjectRef{Atespace: "factory", Name: "actor"}, &out)
++	return out.String(), err
++}
++
++func TestSupervisorObservation(t *testing.T) {
++	f := supervisorFixture(t)
++	out, err := observeSupervisor(f)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !reflect.DeepEqual(f.calls, []string{"actor:factory/actor", "template:factory/template", "actor:factory/actor"}) {
++		t.Fatalf("read sequence: %v", f.calls)
++	}
++	if strings.Contains(out, "SECRET_MARKER") || strings.Contains(out, "never-print-this") || strings.Contains(out, "activation.jwt") {
++		t.Fatalf("private template data escaped: %s", out)
++	}
++	var got map[string]any
++	if err := json.Unmarshal([]byte(out), &got); err != nil {
++		t.Fatal(err)
++	}
++	want := map[string]any{
++		"schema_version": "substrate.supervisor-observation/v1", "atespace": "factory", "actor_name": "actor", "actor_uid": "actor-uid", "state": "ACTOR_STATE_RUNNING",
++		"assignment": map[string]any{"worker_uid": "worker-uid", "node_name": "worker-node"},
++		"activation": map[string]any{"activation_id": "activation-uid", "worker_uid": "worker-uid", "template_uid": "template-uid", "template_digest": f.actor.Status.SupervisorActivation.TemplateDigest, "image_digest": "sha256:" + strings.Repeat("a", 64), "launch_digest": "sha256:" + strings.Repeat("b", 64), "profile": supervisorbootstrap.Profile},
++		"template":   map[string]any{"atespace": "factory", "name": "template", "uid": "template-uid", "digest": f.actor.Status.SupervisorActivation.TemplateDigest, "resource_limits": map[string]any{"cpu": "500m", "memory": "512Mi"}},
++	}
++	if !reflect.DeepEqual(got, want) {
++		t.Fatalf("observation mismatch:\ngot  %#v\nwant %#v", got, want)
++	}
++}
++
++func TestSupervisorObservationRejectsChangesAndInvalidBindings(t *testing.T) {
++	for name, mutate := range map[string]func(*fakeSupervisorReader){
++		"actor changed":              func(f *fakeSupervisorReader) { f.last.Metadata.Uid = "recreated" },
++		"version changed":            func(f *fakeSupervisorReader) { f.last.Metadata.Version++ },
++		"state changed":              func(f *fakeSupervisorReader) { f.last.Status.State = ateapi.ActorState_ACTOR_STATE_SUSPENDING },
++		"activation changed":         func(f *fakeSupervisorReader) { f.last.Status.SupervisorActivation.ActivationId = "next" },
++		"assignment changed":         func(f *fakeSupervisorReader) { f.last.Status.WorkerAssignment.NodeName = "next" },
++		"template reference changed": func(f *fakeSupervisorReader) { f.last.ActorTemplate.Name = "next" },
++		"wrong actor":                func(f *fakeSupervisorReader) { f.actor.Metadata.Name = "another" },
++		"missing actor":              func(f *fakeSupervisorReader) { f.actor = nil },
++		"unversioned actor":          func(f *fakeSupervisorReader) { f.actor.Metadata.Version = 0 },
++		"wrong template":             func(f *fakeSupervisorReader) { f.template.Metadata.Name = "another" },
++		"template recreated":         func(f *fakeSupervisorReader) { f.template.Metadata.Uid = "another" },
++		"missing template":           func(f *fakeSupervisorReader) { f.template = nil },
++		"changed template":           func(f *fakeSupervisorReader) { f.template.Containers[0].Env[1].Value = "changed" },
++		"ordinary template":          func(f *fakeSupervisorReader) { f.template.Volumes = nil },
++		"unsafe projection":          func(f *fakeSupervisorReader) { f.template.Containers[0].VolumeMounts[0].MountPath = "/tmp" },
++		"unsafe snapshot": func(f *fakeSupervisorReader) {
++			f.template.SnapshotConfig.PreferredFidelity = ateapi.SnapshotFidelity_SNAPSHOT_FIDELITY_MEMORY
++		},
++		"missing activation":  func(f *fakeSupervisorReader) { f.actor.Status.SupervisorActivation = nil },
++		"wrong worker":        func(f *fakeSupervisorReader) { f.actor.Status.WorkerAssignment.WorkerPodUid = "another" },
++		"missing assignment":  func(f *fakeSupervisorReader) { f.actor.Status.WorkerAssignment = nil },
++		"missing node":        func(f *fakeSupervisorReader) { f.actor.Status.WorkerAssignment.NodeName = "" },
++		"first read error":    func(f *fakeSupervisorReader) { f.errAt = 1 },
++		"template read error": func(f *fakeSupervisorReader) { f.errAt = 2 },
++		"second read error":   func(f *fakeSupervisorReader) { f.errAt = 3 },
++	} {
++		t.Run(name, func(t *testing.T) {
++			f := supervisorFixture(t)
++			mutate(f)
++			out, err := observeSupervisor(f)
++			if err == nil || out != "" || strings.Contains(err.Error(), "secret") || len(err.Error()) > 128 {
++				t.Fatalf("expected bounded denial without output: %q, %v", out, err)
++			}
++		})
++	}
++}
++
++func TestSupervisorLimits(t *testing.T) {
++	for name, limits := range map[string]*ateapi.Resources{
++		"none":        nil,
++		"no memory":   {CpuMillicores: 500},
++		"no cpu":      {MemoryBytes: 512 << 20},
++		"negative":    {CpuMillicores: -1, MemoryBytes: 512 << 20},
++		"zero memory": {CpuMillicores: 1000, MemoryBytes: 0},
++	} {
++		if _, err := supervisorLimits(&ateapi.ResourceRequirements{Limits: limits}); err == nil {
++			t.Fatalf("%s: accepted limits", name)
++		}
++	}
++	got, err := supervisorLimits(&ateapi.ResourceRequirements{Limits: &ateapi.Resources{CpuMillicores: 2000, MemoryBytes: 512 << 20}})
++	if err != nil || got["cpu"] != "2" || got["memory"] != "512Mi" {
++		t.Fatalf("canonical limits: %v, %v", got, err)
++	}
++}
++
++func TestSupervisorCommandArgs(t *testing.T) {
++	runCommandArgsTests(t, []commandArgsTest{
++		{name: "missing", command: getSupervisorActivationCmd, wantErr: true},
++		{name: "one", command: getSupervisorActivationCmd, args: []string{"actor"}},
++		{name: "many", command: getSupervisorActivationCmd, args: []string{"actor", "other"}, wantErr: true},
++	})
++}
+diff --git a/docs/reference/kubectl-ate.md b/docs/reference/kubectl-ate.md
+index 6e3e9819c..96bf884a6 100644
+--- a/docs/reference/kubectl-ate.md
++++ b/docs/reference/kubectl-ate.md
+@@ -104,6 +104,27 @@ kubectl ate top workers
+ 
+ > **Note:** Actors, workers, and actor templates are not Kubernetes CRDs — they live in the Substrate control plane's PostgreSQL database, not `etcd`. `kubectl get actor`, `kubectl get worker`, and `kubectl get actortemplate` will not return anything; only `kubectl ate get …` queries the control plane (see [Actor Templates](#actor-templates)). `kubectl get workerpool` *does* work, because pools are CRDs.
+ 
++#### Protected supervisor observation
++
++```bash
++kubectl ate get supervisor-activation <actor-name> --atespace <atespace> -o json
++```
++
++This read-only command uses the same private Control connection and authentication
++as other resource reads. It requires JSON output and has a ten-second deadline.
++It reads the actor, its template, then the actor again; a changed actor or an
++inconsistent protected activation returns an error without JSON output.
++
++The `substrate.supervisor-observation/v1` document contains `atespace`,
++`actor_name`, `actor_uid`, the `ACTOR_STATE_*` state, `assignment` with
++`worker_uid` and `node_name`, and the seven public `activation` fields. Its
++`template` contains `atespace`, `name`, `uid`, the deterministic protobuf `digest`,
++and `resource_limits` with positive canonical Kubernetes `cpu` and `memory`
++quantities (for example, `500m` and `512Mi`). The digest excludes template metadata
++and status. No environment values, bootstrap token, or secrets are printed.
++The observation is not an execution permit; callers must require the expected
++running activation and their own current authority.
++
+ #### `kubectl ate get actor` output columns
+ 
+ | Column | Meaning |
+-- 
+2.54.0
+

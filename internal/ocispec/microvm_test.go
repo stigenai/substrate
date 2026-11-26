@@ -305,3 +305,55 @@ func TestShapeMicroVM_SystemMounts(t *testing.T) {
 		}
 	}
 }
+
+func TestShapeMicroVM_GuestDevices(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		devices []string
+		wantErr bool
+	}{
+		{name: "none"},
+		{name: "fuse", devices: []string{"fuse"}},
+		{name: "not in the allowlist", devices: []string{"kvm"}, wantErr: true},
+		{name: "a path", devices: []string{"/dev/fuse"}, wantErr: true},
+		{name: "empty", devices: []string{""}, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := Build(Options{Container: &ateworkerpb.Container{ContainerSpec: &ateworkerpb.ContainerSpec{Args: []string{"/app"}}}})
+			err := ShapeMicroVM(spec, MicroVMOptions{ActorDirs: parityActorDirs, ContainerName: "app", GuestDevices: tc.devices})
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("ShapeMicroVM() = %v, want error: %v", err, tc.wantErr)
+			}
+			if (ValidateGuestDevices(tc.devices) != nil) != tc.wantErr {
+				t.Errorf("ValidateGuestDevices(%q) disagrees with ShapeMicroVM", tc.devices)
+			}
+			if tc.wantErr {
+				return
+			}
+
+			if len(tc.devices) == 0 {
+				if len(spec.Linux.Devices) != 0 {
+					t.Errorf("Linux.Devices = %+v, want none", spec.Linux.Devices)
+				}
+				assertDefaultDeviceAllowlist(t, spec.Linux.Resources.Devices)
+				return
+			}
+			if len(spec.Linux.Devices) != 1 {
+				t.Fatalf("Linux.Devices = %+v, want /dev/fuse only", spec.Linux.Devices)
+			}
+			d := spec.Linux.Devices[0]
+			if d.Path != "/dev/fuse" || d.Type != "c" || d.Major != 10 || d.Minor != 229 {
+				t.Errorf("Linux.Devices[0] = %+v, want /dev/fuse c 10:229", d)
+			}
+			// The default deny rule comes first, so the allow rule has to follow it.
+			rules := spec.Linux.Resources.Devices
+			last := rules[len(rules)-1]
+			if !last.Allow || last.Type != "c" || !eqInt64Ptr(last.Major, new(int64(10))) || !eqInt64Ptr(last.Minor, new(int64(229))) || last.Access != "rwm" {
+				t.Errorf("last device cgroup rule = %+v, want allow c 10:229 rwm", last)
+			}
+			if rules[0].Allow {
+				t.Errorf("first device cgroup rule = %+v, want the default deny", rules[0])
+			}
+		})
+	}
+}

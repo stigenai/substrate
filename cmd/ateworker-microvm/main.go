@@ -51,6 +51,7 @@ import (
 	"go.ate.dev/substrate/internal/atunnel"
 	"go.ate.dev/substrate/internal/bootid"
 	"go.ate.dev/substrate/internal/nodepath"
+	"go.ate.dev/substrate/internal/ocispec"
 	"go.ate.dev/substrate/internal/otlprelay"
 	"go.ate.dev/substrate/internal/preview"
 	"go.ate.dev/substrate/internal/proto/ateworkerpb"
@@ -81,6 +82,7 @@ var (
 
 	readinessListenAddress = pflag.String("readiness-listen-address", "0.0.0.0:8080", "Address for the HTTP /readyz and /healthz probes")
 	maxActors              = pflag.Int("max-actors", 1000, "How many actors this worker will host at once")
+	guestDevices           = pflag.StringSlice("guest-devices", nil, "Device nodes to create in each guest container, from a fixed allowlist (fuse).")
 	usageSampleInterval    = pflag.Duration("usage-sample-interval", time.Minute, "How often the ateworker samples the resource usage of its actors. Each sample writes an ate.actor.usage_sampled record per actor, and GetActiveWorkloadStats serves the latest.")
 )
 
@@ -121,6 +123,9 @@ func do(ctx context.Context) error {
 	slog.InfoContext(ctx, "ateworker-microvm booting", slog.String("version", version.Version))
 	if *maxActors < 0 {
 		return fmt.Errorf("--max-actors must not be negative, got %d", *maxActors)
+	}
+	if err := ocispec.ValidateGuestDevices(*guestDevices); err != nil {
+		return fmt.Errorf("--guest-devices: %w", err)
 	}
 	if *usageSampleInterval < minUsageSampleInterval {
 		return fmt.Errorf("--usage-sample-interval must be at least %v, got %v", minUsageSampleInterval, *usageSampleInterval)
@@ -239,6 +244,7 @@ func do(ctx context.Context) error {
 		return err
 	}
 	ateworkerService := NewService(*podUID, *chBinary, *guestDebug, *maxActors, tunnel, actorLogger, bootID)
+	ateworkerService.guestDevices = *guestDevices
 	ateworkerService.throttleMemory = cgroup.PSIEnabled(cgroup.Root)
 	if !ateworkerService.throttleMemory {
 		slog.WarnContext(ctx, "Kernel has no cgroup memory pressure (PSI), so actor cgroups get no memory limit and an actor over its booking can restart the worker")
@@ -388,6 +394,9 @@ type AteWorkerService struct {
 	podUID     string
 	chBinary   string
 	guestDebug bool
+	// guestDevices names the allowlisted device nodes to create in each guest
+	// container. Set from --guest-devices.
+	guestDevices []string
 
 	// snapshotWrites holds a slot per CH snapshot write in flight, whose page
 	// cache memoryReservedBytes budgets for.

@@ -669,6 +669,7 @@ func main() {
 	mux.HandleFunc("/stat", stat)
 	mux.HandleFunc("/resources", resources)
 	mux.HandleFunc("/capabilities", capabilities)
+	mux.HandleFunc("/fuse", fuseProbe)
 	mux.HandleFunc("/filesystem", filesystem)
 	mux.HandleFunc("/healthz", healthz)
 

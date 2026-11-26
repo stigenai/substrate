@@ -16,6 +16,8 @@ package ocispec
 
 import (
 	"fmt"
+	"maps"
+	"os"
 	"path"
 	"path/filepath"
 	"runtime"
@@ -55,6 +57,26 @@ type MicroVMOptions struct {
 	// staged into the share.
 	ActorDirs     *ateworkerpb.ActorDirs
 	ContainerName string
+	// GuestDevices names device nodes from the guestDevices allowlist to
+	// create in the guest container.
+	GuestDevices []string
+}
+
+// guestDevices is the allowlist of device nodes an operator can give a
+// microVM worker pool. Each node exists only in the guest kernel, so it gives
+// the actor no host device.
+var guestDevices = map[string]specs.LinuxDevice{
+	"fuse": {Path: "/dev/fuse", Type: "c", Major: 10, Minor: 229, FileMode: new(os.FileMode(0o666))},
+}
+
+// ValidateGuestDevices returns an error if a name is not in guestDevices.
+func ValidateGuestDevices(names []string) error {
+	for _, n := range names {
+		if _, ok := guestDevices[n]; !ok {
+			return fmt.Errorf("guest device %q is not allowed; allowed: %v", n, slices.Sorted(maps.Keys(guestDevices)))
+		}
+	}
+	return nil
 }
 
 // ShapeMicroVM repoints volume bind mounts to guest share paths, applies
@@ -109,6 +131,16 @@ func ShapeMicroVM(spec *specs.Spec, o MicroVMOptions) error {
 	// The container's own declared limits survive the merge; StartRootfsContainer
 	// sets CgroupsPath.
 	spec.Linux.Resources = mergeKataResources(spec.Linux.Resources)
+	for _, n := range o.GuestDevices {
+		d, ok := guestDevices[n]
+		if !ok {
+			return fmt.Errorf("guest device %q is not allowed", n)
+		}
+		spec.Linux.Devices = append(spec.Linux.Devices, d)
+		spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, specs.LinuxDeviceCgroup{
+			Allow: true, Type: d.Type, Major: new(d.Major), Minor: new(d.Minor), Access: "rwm",
+		})
+	}
 	return nil
 }
 

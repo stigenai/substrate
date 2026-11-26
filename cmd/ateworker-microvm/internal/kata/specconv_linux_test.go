@@ -17,6 +17,7 @@
 package kata
 
 import (
+	"os"
 	"slices"
 	"testing"
 
@@ -192,5 +193,22 @@ func TestSpecToAgentPB_ForwardsCwd(t *testing.T) {
 	got := SpecToAgentPB(&specs.Spec{Process: &specs.Process{Cwd: "/work"}})
 	if got.GetProcess().GetCwd() != "/work" {
 		t.Fatalf("Process.Cwd = %q, want /work", got.GetProcess().GetCwd())
+	}
+}
+
+// The agent creates a device node only if the spec it is sent lists it.
+func TestSpecToAgentPB_Devices(t *testing.T) {
+	mode := os.FileMode(0o666)
+	got := SpecToAgentPB(&specs.Spec{
+		Linux: &specs.Linux{
+			Devices: []specs.LinuxDevice{{Path: "/dev/fuse", Type: "c", Major: 10, Minor: 229, FileMode: &mode}},
+		},
+	})
+	if len(got.Linux.Devices) != 1 {
+		t.Fatalf("Devices = %v, want one entry", got.Linux.Devices)
+	}
+	d := got.Linux.Devices[0]
+	if d.Path != "/dev/fuse" || d.Type != "c" || d.Major != 10 || d.Minor != 229 || d.FileMode != 0o666 {
+		t.Errorf("Devices[0] = %+v, want /dev/fuse c 10:229 mode 0666", d)
 	}
 }

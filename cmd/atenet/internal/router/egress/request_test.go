@@ -576,6 +576,53 @@ func TestMITMLegPicksCredentialByPath(t *testing.T) {
 	}
 }
 
+// An exact path picks its credential like a prefix does, and beats the
+// catch-all for that path only.
+func TestMITMLegPicksCredentialByExactPath(t *testing.T) {
+	rule := func(uri string, paths ...string) *ateapi.EgressRule {
+		return &ateapi.EgressRule{Https: &ateapi.HttpsRule{
+			Hostnames: []string{"api.example.com"},
+			Paths:     paths,
+			Effects: &ateapi.HttpRuleEffects{ReplaceHeaders: []*ateapi.CredentialHeader{{
+				Header: "authorization", Prefix: "Basic ", CredentialUri: uri,
+			}}},
+		}}
+	}
+	exact := rule("ate-secret://k8s/default/exact", "/backend-api/codex/models")
+	catchAll := rule("ate-secret://k8s/default/catchall")
+	tests := []struct {
+		name    string
+		rules   []*ateapi.EgressRule
+		path    string
+		wantURI string // empty means denied
+	}{
+		{"exact path gets the exact credential", []*ateapi.EgressRule{catchAll, exact}, "/backend-api/codex/models?client_version=1", "ate-secret://k8s/default/exact"},
+		{"a longer path gets the catch-all", []*ateapi.EgressRule{exact, catchAll}, "/backend-api/codex/models/x", "ate-secret://k8s/default/catchall"},
+		{"only the exact rule denies a longer path", []*ateapi.EgressRule{exact}, "/backend-api/codex/models/x", ""},
+		{"dot-dot is denied", []*ateapi.EgressRule{exact}, "/backend-api/codex/../codex/models", ""},
+		{"dot-dot cannot pick the catch-all", []*ateapi.EgressRule{exact, catchAll}, "/backend-api/codex/../codex/models", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := &fakeProvider{resp: bearerTokenResponse("tok")}
+			h := injectionHandlerFor(&ateapi.EgressPolicy{Rules: tc.rules}, provider, injectionProviderName)
+			md := withAuthorization(innerMetadataAt(extproc.EgressTLSMITMFilterChainName, "GET", "api.example.com", tc.path, nil))
+			res, err := h.HandleRequestHeaders(context.Background(), md)
+			if tc.wantURI == "" {
+				wantStatus(t, err, envoy_type.StatusCode_Forbidden)
+				if provider.got != nil {
+					t.Errorf("provider asked for %q on a denied request", provider.got.GetUri())
+				}
+				return
+			}
+			wantAllowed(t, res, err)
+			if got := provider.got.GetUri(); got != tc.wantURI {
+				t.Errorf("credential URI = %q, want %q", got, tc.wantURI)
+			}
+		})
+	}
+}
+
 // A wildcard host with path prefixes picks its credential by path like an
 // exact host does.
 func TestMITMLegPicksCredentialByPathUnderWildcardHost(t *testing.T) {

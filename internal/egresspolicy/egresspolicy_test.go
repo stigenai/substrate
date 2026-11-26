@@ -663,6 +663,110 @@ func TestCompileDropsBadPathPrefixWithoutWidening(t *testing.T) {
 	}
 }
 
+func exactHttpsRule(host string, paths ...string) *ateapi.EgressRule {
+	return &ateapi.EgressRule{Https: &ateapi.HttpsRule{Hostnames: []string{host}, Paths: paths}}
+}
+
+func TestCheckExactPath(t *testing.T) {
+	for _, path := range []string{
+		"", "a", "backend-api/x", "/a?x=1", "/a#x", "/a/../b", "/a/./b", "/a/..",
+		"/a/%2e%2e/b", "/a/%2E./b", "/a%2fb", "/a%2Fb", "/a%5cb", `/a\b`,
+	} {
+		t.Run("reject "+path, func(t *testing.T) {
+			if err := CheckExactPath(path); err == nil {
+				t.Errorf("CheckExactPath(%q) = nil, want an error", path)
+			}
+		})
+	}
+	for _, path := range []string{
+		"/", "/backend-api/wham/accounts/check", "/backend-api/codex/responses",
+		"/backend-api/codex/models", "/a/", "/a..b", "//a",
+	} {
+		t.Run("accept "+path, func(t *testing.T) {
+			if err := CheckExactPath(path); err != nil {
+				t.Errorf("CheckExactPath(%q) = %v, want nil", path, err)
+			}
+		})
+	}
+}
+
+func TestEvaluateRequestExactPaths(t *testing.T) {
+	const check = "/backend-api/wham/accounts/check"
+	e := exactHttpsRule("chatgpt.com", check)
+	all := httpsRule("chatgpt.com")
+	codex := exactHttpsRule("chatgpt.com", check, "/backend-api/codex/responses", "/backend-api/codex/models")
+	mixed := &ateapi.EgressRule{Https: &ateapi.HttpsRule{Hostnames: []string{"chatgpt.com"}, Paths: []string{"/x"}, PathPrefixes: []string{"/y/"}}}
+	prefixAndExact := policy(scopedHttpsRule("chatgpt.com", "/backend-api/"), exactHttpsRule("chatgpt.com", "/backend-api/codex/models"))
+	equal := policy(scopedHttpsRule("chatgpt.com", "/a/"), exactHttpsRule("chatgpt.com", "/a/"))
+	tests := []struct {
+		name   string
+		policy *ateapi.EgressPolicy
+		dest   Destination
+		want   int // deciding rule index, -1 for a deny
+	}{
+		{"exact path", policy(e), atPath("chatgpt.com", check), 0},
+		{"query is not part of the path", policy(e), atPath("chatgpt.com", check+"?x=1"), 0},
+		{"trailing slash", policy(e), atPath("chatgpt.com", check+"/"), -1},
+		{"longer name", policy(e), atPath("chatgpt.com", check+"x"), -1},
+		{"shorter path", policy(e), atPath("chatgpt.com", "/backend-api/wham/accounts"), -1},
+		{"case sensitive", policy(e), atPath("chatgpt.com", "/Backend-api/wham/accounts/check"), -1},
+		{"doubled leading slash", policy(e), atPath("chatgpt.com", "/"+check), -1},
+		{"empty path", policy(e), atPath("chatgpt.com", ""), -1},
+		{"catch-all first", policy(all, e), atPath("chatgpt.com", check), 1},
+		{"catch-all first serves others", policy(all, e), atPath("chatgpt.com", "/other"), 0},
+		{"exact first", policy(e, all), atPath("chatgpt.com", check), 0},
+		{"exact first, catch-all serves others", policy(e, all), atPath("chatgpt.com", "/other"), 1},
+		{"exact beats longest prefix", prefixAndExact, atPath("chatgpt.com", "/backend-api/codex/models"), 1},
+		{"prefix serves other paths", prefixAndExact, atPath("chatgpt.com", "/backend-api/codex/other"), 0},
+		{"exact beats equal prefix", equal, atPath("chatgpt.com", "/a/"), 1},
+		{"equal prefix serves below", equal, atPath("chatgpt.com", "/a/b"), 0},
+		{"mixed rule exact", policy(mixed), atPath("chatgpt.com", "/x"), 0},
+		{"mixed rule prefix", policy(mixed), atPath("chatgpt.com", "/y/z"), 0},
+		{"mixed rule below exact", policy(mixed), atPath("chatgpt.com", "/x/z"), -1},
+		{"mixed rule other", policy(mixed), atPath("chatgpt.com", "/z"), -1},
+		{"name ranks before path", policy(exactHttpsRule("*.com", check), all), atPath("chatgpt.com", check), 1},
+		{"dot-dot with catch-all", policy(all, e), atPath("chatgpt.com", "/backend-api/wham/accounts/../check"), -1},
+		{"dot with catch-all", policy(all, e), atPath("chatgpt.com", "/backend-api/wham/accounts/./check"), -1},
+		{"encoded slash with catch-all", policy(all, e), atPath("chatgpt.com", "/backend-api%2fwham/accounts/check"), -1},
+		{"connection decision", policy(e), host("chatgpt.com"), 0},
+		{"codex models with query", policy(codex), atPath("chatgpt.com", "/backend-api/codex/models?client_version=1"), 0},
+		{"codex responses subpath", policy(codex), atPath("chatgpt.com", "/backend-api/codex/responses/compact"), -1},
+		{"codex other path", policy(codex), atPath("chatgpt.com", "/backend-api/other"), -1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mustCompile(t, tc.policy).EvaluateRequest(tc.dest, true)
+			if got.RuleIndex != tc.want || got.Allowed != (tc.want >= 0) {
+				t.Errorf("EvaluateRequest(%+v) = %+v, want rule %d", tc.dest, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCompileDropsBadPathWithoutWidening(t *testing.T) {
+	for _, path := range []string{"", "no-slash", "/a?x", "/a#x", "/a/../b", "/a%2fb"} {
+		t.Run(path, func(t *testing.T) {
+			compiled, errs := Compile(policy(exactHttpsRule("github.com", path)))
+			if len(errs) != 1 {
+				t.Fatalf("Compile errors = %v, want 1", errs)
+			}
+			for _, p := range []string{"/anything", "/a", "/", "/a/../b"} {
+				if got := compiled.EvaluateRequest(atPath("github.com", p), true); got.Allowed {
+					t.Errorf("EvaluateRequest(%q) = %+v, want a deny: the rule must not widen to all paths", p, got)
+				}
+			}
+		})
+	}
+}
+
+func TestSNIRulesIncludeExactPathRules(t *testing.T) {
+	compiled := mustCompile(t, policy(exactHttpsRule("chatgpt.com", "/a")))
+	want := []SNIRule{{Pattern: "chatgpt.com", Mode: SNIModeMITM}}
+	if got := compiled.SNIRules(443); !slices.Equal(got, want) {
+		t.Errorf("SNIRules(443) = %v, want %v", got, want)
+	}
+}
+
 func TestSNIRulesIncludePathScopedRules(t *testing.T) {
 	compiled := mustCompile(t, policy(scopedHttpsRule("github.com", "/zach-source/")))
 	want := []SNIRule{{Pattern: "github.com", Mode: SNIModeMITM}}

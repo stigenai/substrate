@@ -1070,6 +1070,11 @@ data:
           name: envoy.transport_sockets.tls
           typed_config:
             "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+            # 0 turns off session resumption. Envoy keeps one session cache per
+            # cluster and offers its newest session to any SNI, and an origin
+            # that accepts the ticket across SNI answers with another host's
+            # certificate, which fails the SAN check with a 503.
+            max_session_keys: 0
             common_tls_context:
               validation_context:
                 trusted_ca:
@@ -1096,6 +1101,8 @@ data:
           name: envoy.transport_sockets.tls
           typed_config:
             "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+            # See egress_forward_proxy.
+            max_session_keys: 0
             common_tls_context:
               validation_context:
                 trusted_ca:

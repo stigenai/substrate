@@ -420,6 +420,28 @@ func autoSNIAndSAN(cluster node) bool {
 	return false
 }
 
+// Envoy keeps one upstream TLS session cache per cluster and offers its newest
+// session to any SNI. An origin that accepts a ticket across SNI then answers
+// with another host's certificate, and the SAN check fails with a 503. Every
+// cluster whose SNI comes from the Host must turn resumption off.
+func TestEgressManifestsDisableUpstreamSessionResumption(t *testing.T) {
+	var got []string
+	for _, cluster := range clusters(bootstrapTree(t)) {
+		tc := child(child(cluster, "transport_socket"), "typed_config")
+		if !strings.HasSuffix(str(tc, "@type"), "UpstreamTlsContext") || !autoSNIAndSAN(cluster) {
+			continue
+		}
+		got = append(got, str(cluster, "name"))
+		if v, ok := tc["max_session_keys"].(float64); !ok || v != 0 {
+			t.Errorf("cluster %q has max_session_keys %v, want 0", str(cluster, "name"), tc["max_session_keys"])
+		}
+	}
+	slices.Sort(got)
+	if want := []string{"egress_forward_proxy", "egress_forward_proxy_grpc"}; !slices.Equal(got, want) {
+		t.Errorf("auto_sni TLS clusters = %v, want %v", got, want)
+	}
+}
+
 // A request leg's answer picks its route: every route matches dial=name and
 // there is no default, so a request the sidecar did not answer for has no
 // route. The route goes to a dynamic forward proxy cluster, and only with the

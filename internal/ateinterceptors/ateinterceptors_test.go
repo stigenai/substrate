@@ -487,3 +487,20 @@ func TestServerUnaryInterceptorElidesListResponses(t *testing.T) {
 		t.Fatalf("interceptor mutated the response returned to the client")
 	}
 }
+
+func TestServerUnaryInterceptorRedactsSupervisorBootstrap(t *testing.T) {
+	log := captureDefaultLog(t)
+	response := &ateapi.MintSupervisorBootstrapResponse{Token: "synthetic-bootstrap-secret"}
+	_, err := ServerUnaryInterceptor(context.Background(), &ateapi.MintSupervisorBootstrapRequest{}, &grpc.UnaryServerInfo{FullMethod: ateapi.WorkerService_MintSupervisorBootstrap_FullMethodName}, func(context.Context, interface{}) (interface{}, error) {
+		return response, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(log.String(), response.Token) || !strings.Contains(log.String(), protoredact.Placeholder) {
+		t.Fatal("supervisor token log redaction failed")
+	}
+	if response.Token != "synthetic-bootstrap-secret" {
+		t.Fatal("client response mutated")
+	}
+}

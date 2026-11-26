@@ -90,6 +90,9 @@ type SubstrateClaims struct {
 	// with where the actor is when the token is used. Empty on an actor's
 	// own token, which is not tied to a node.
 	Node string
+	// Supervisor is set only by the protected supervisor bootstrap RPC. The
+	// generic actor and worker-for-actor mint paths never set it.
+	Supervisor *SupervisorClaims
 }
 
 type WireClaims struct {
@@ -125,6 +128,24 @@ type WireSubstrateClaims struct {
 	ActorName string `json:"actorName,omitempty"`
 	ActorUID  string `json:"actorUID,omitempty"`
 	Node      string `json:"node,omitempty"`
+
+	Supervisor *SupervisorClaims `json:"supervisor,omitempty"`
+}
+
+// SupervisorClaims binds a bootstrap token to one activation of a protected
+// supervisor.
+type SupervisorClaims struct {
+	SchemaVersion  string `json:"schema_version"`
+	Purpose        string `json:"purpose"`
+	Profile        string `json:"profile"`
+	ActivationID   string `json:"activation_id"`
+	WorkerUID      string `json:"worker_uid"`
+	NodeName       string `json:"node_name"`
+	NodeUID        string `json:"node_uid"`
+	TemplateUID    string `json:"template_uid"`
+	TemplateDigest string `json:"template_digest"`
+	ImageDigest    string `json:"image_digest"`
+	LaunchDigest   string `json:"launch_digest"`
 }
 
 func ClaimsToWire(claims *Claims) (*WireClaims, error) {
@@ -147,6 +168,8 @@ func ClaimsToWire(claims *Claims) (*WireClaims, error) {
 		ActorName: claims.Substrate.ActorName,
 		ActorUID:  claims.Substrate.ActorUID,
 		Node:      claims.Substrate.Node,
+
+		Supervisor: claims.Substrate.Supervisor,
 	}
 	switch claims.Kind {
 	case KindActor:

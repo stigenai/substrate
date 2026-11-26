@@ -3502,7 +3502,7 @@ func Validate_Snapshot(
 	return errs
 }
 
-var unionMembershipFor_go_ate_dev_substrate_internal_proto_ateletpb_SystemInfoDataSource_ = validate.NewUnionMembership(validate.NewUnionMember("actor_metadata"), validate.NewUnionMember("trust_bundle"))
+var unionMembershipFor_go_ate_dev_substrate_internal_proto_ateletpb_SystemInfoDataSource_ = validate.NewUnionMembership(validate.NewUnionMember("actor_metadata"), validate.NewUnionMember("trust_bundle"), validate.NewUnionMember("supervisor_bootstrap"))
 
 // Validate_SystemInfoDataSource validates an instance of SystemInfoDataSource according
 // to declarative validation rules in the API schema.
@@ -3522,6 +3522,12 @@ func Validate_SystemInfoDataSource(
 				return false
 			}
 			return obj.TrustBundle != nil
+		},
+		func(obj *ateletpb.SystemInfoDataSource) bool {
+			if obj == nil {
+				return false
+			}
+			return obj.SupervisorBootstrap != nil
 		}); len(e) != 0 {
 		errs = append(errs, e...)
 	}
@@ -3584,6 +3590,34 @@ func Validate_SystemInfoDataSource(
 				return oldObj.TrustBundle
 			})
 		errs = append(errs, fn(fldPath.Child("trust_bundle"), obj.TrustBundle, oldVal, oldObj != nil)...)
+	}
+
+	{ // field ateletpb.SystemInfoDataSource.SupervisorBootstrap
+		fn := func(
+			fldPath *field.Path,
+			obj, oldObj *ateletpb.SupervisorBootstrapDataSource,
+			oldValueCorrelated bool) (errs field.ErrorList) {
+			// don't revalidate unchanged data
+			if oldValueCorrelated && op.Type == operation.Update {
+				if ateDeepEqual(obj, oldObj) {
+					return nil
+				}
+			}
+			// call field-attached validations
+			earlyReturn := false
+			if e := validate.OptionalPointer(ctx, op, fldPath, obj, oldObj).MarkShortCircuit(); len(e) != 0 {
+				earlyReturn = true
+			}
+			if earlyReturn {
+				return // do not proceed
+			}
+			return
+		}
+		oldVal := safe.Field(oldObj,
+			func(oldObj *ateletpb.SystemInfoDataSource) *ateletpb.SupervisorBootstrapDataSource {
+				return oldObj.SupervisorBootstrap
+			})
+		errs = append(errs, fn(fldPath.Child("supervisor_bootstrap"), obj.SupervisorBootstrap, oldVal, oldObj != nil)...)
 	}
 
 	return errs

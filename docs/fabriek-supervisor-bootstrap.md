@@ -12,11 +12,13 @@ source in that volume, mounted only by the single root container at
 `/run/substrate/fabriek-supervisor`. The file `activation.jwt` is root-owned
 0600 in a root-owned 0700 directory, read-only to the guest. No secret appears in
 Task environment, actor metadata, or the public template. Unsupported profiles
-fail closed. The template must use Data on pause and commit, and Golden for
-Data resume. Golden actors receive an empty protected volume and no credential.
-Non-golden actors cannot restore a Full memory snapshot. Files in SystemInfo
-are excluded from snapshots; keeping golden memory credential-free is separately
-required because file exclusion alone does not exclude bytes read into memory.
+fail closed. The template must set `snapshotConfig.preferredFidelity` to
+`VOLUMES` or `ROOTFS`, so no snapshot holds process memory and every resume
+cold-boots the supervisor. Resume refuses an actor whose snapshot to restore
+holds memory. The golden actor, which the template reconciler names after the
+template UID, receives an empty protected volume and no token. Files in
+SystemInfo are excluded from snapshots, but file exclusion alone does not
+exclude bytes read into memory, which is why memory snapshots are refused.
 
 The server records `status.supervisorActivation` when it transitions the actor
 to RESUMING under its existing lifecycle lease. It contains `activationId`,
@@ -33,13 +35,13 @@ activation ID, and worker UID. Only atelet mTLS is accepted. Issuance verifies
 current actor/worker assignment, the calling atelet's node incarnation, live
 worker Pod identity, approved template projection, and RESUMING/RUNNING state.
 The secret is delivered only to atelet, which projects it before starting or
-restoring the workload. Generic `Control.MintActorJWT` cannot emit this claim.
+restoring the workload. Generic `Control.MintActorJwt` cannot emit this claim.
 
 JWTs reuse the configured actor signing pool and issuer. Standard claims are
 `iss`, `sub=actor/<atespace>/<name>`, `aud=[urn:fabriek:native-bootstrap]`,
-`iat`, `nbf`, `exp`, and random `jti`; the lifetime is 300 seconds. Existing
-`ate.dev` fields identify `atespace`, `actorName`, and `actorUID`. The additional
-`ate.dev.supervisor` object uses these exact JSON keys:
+`iat`, `nbf`, `exp`, and random `jti`; the lifetime is 300 seconds. The
+`actor.ate.dev` claim identifies `atespace`, `actorName`, and `actorUID`. Its
+additional `supervisor` object uses these exact JSON keys:
 
 ```json
 {

@@ -24,6 +24,7 @@ import (
 	"go.ate.dev/substrate/internal/localca"
 	"go.ate.dev/substrate/internal/localjwtauthority"
 	"go.ate.dev/substrate/internal/resources"
+	"k8s.io/client-go/kubernetes"
 )
 
 // Server implements ateapi.WorkerServiceServer.
@@ -49,6 +50,20 @@ type Server struct {
 	// Control.MintActorJwt uses.
 	actorJWTIssuer string
 	actorIDJWTPool localjwtauthority.Pool
+
+	// kube verifies the live Node and Pod identity behind a supervisor
+	// bootstrap request. Without it MintSupervisorBootstrap denies every
+	// request.
+	kube kubernetes.Interface
+}
+
+// Option configures a Server.
+type Option func(*Server)
+
+// WithKubernetes sets the client that MintSupervisorBootstrap uses to verify
+// the calling node and the worker Pod.
+func WithKubernetes(kube kubernetes.Interface) Option {
+	return func(s *Server) { s.kube = kube }
 }
 
 // actorControl is the in-process slice of the Control service this package
@@ -61,8 +76,8 @@ type actorControl interface {
 
 var _ ateapi.WorkerServiceServer = (*Server)(nil)
 
-func New(store store.Interface, control actorControl, ateletSPIFFEID string, actorIDCAPool localca.Pool, actorJWTIssuer string, actorIDJWTPool localjwtauthority.Pool) *Server {
-	return &Server{
+func New(store store.Interface, control actorControl, ateletSPIFFEID string, actorIDCAPool localca.Pool, actorJWTIssuer string, actorIDJWTPool localjwtauthority.Pool, opts ...Option) *Server {
+	s := &Server{
 		store:          store,
 		control:        control,
 		ateletSPIFFEID: ateletSPIFFEID,
@@ -70,4 +85,8 @@ func New(store store.Interface, control actorControl, ateletSPIFFEID string, act
 		actorJWTIssuer: actorJWTIssuer,
 		actorIDJWTPool: actorIDJWTPool,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }

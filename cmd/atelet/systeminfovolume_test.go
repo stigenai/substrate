@@ -139,7 +139,7 @@ func registerTrustVolume(t *testing.T, r *systemInfoVolumeRefresher, dir, actorU
 		Root: filepath.Join(dir, actorUID, "system-info", "trust"),
 		Spec: trustVolumeSpec("ca.pem"),
 	}
-	if _, err := r.Register(actorUID, resources.ActorRef{Atespace: "team-a", Name: actorUID}, []*systemInfoVolume{vol}); err != nil {
+	if _, err := r.Register(t.Context(), actorUID, resources.ActorRef{Atespace: "team-a", Name: actorUID}, []*systemInfoVolume{vol}); err != nil {
 		t.Fatalf("Register(%s): %v", actorUID, err)
 	}
 }
@@ -266,7 +266,7 @@ func TestSystemInfoVolumeRefresher_RegisterEmptyStopsRefreshing(t *testing.T) {
 	// The actor comes back under a spec with no system-info volumes: it stays
 	// tracked, but its former volumes stop refreshing.
 	r.Deregister("uid-1")
-	if _, err := r.Register("uid-1", resources.ActorRef{Atespace: "team-a", Name: "uid-1"}, nil); err != nil {
+	if _, err := r.Register(t.Context(), "uid-1", resources.ActorRef{Atespace: "team-a", Name: "uid-1"}, nil); err != nil {
 		t.Fatalf("Register(empty): %v", err)
 	}
 	if r.actors["uid-1"] == nil {
@@ -398,7 +398,7 @@ func TestSystemInfoVolumeRefresher_RotationLeavesUnchangedFilesAlone(t *testing.
 	spec := &ateletpb.SystemInfoVolumeSource{
 		DataSources: append(metadataVolumeSpec().GetDataSources(), trustVolumeSpec("trust/ca.pem").GetDataSources()...),
 	}
-	if _, err := r.Register("uid-1", resources.ActorRef{Atespace: "team-a", Name: "actor-1"}, []*systemInfoVolume{{Name: "vol1", Root: root, Spec: spec}}); err != nil {
+	if _, err := r.Register(t.Context(), "uid-1", resources.ActorRef{Atespace: "team-a", Name: "actor-1"}, []*systemInfoVolume{{Name: "vol1", Root: root, Spec: spec}}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
@@ -431,14 +431,14 @@ func TestSystemInfoVolumeRegister_WritesActorMetadata(t *testing.T) {
 	}
 
 	golden := resources.ActorRef{Atespace: "ate-e2e-probe", Name: "golden-actor"}
-	if _, err := r.Register("uid-golden", golden, []*systemInfoVolume{vol()}); err != nil {
+	if _, err := r.Register(t.Context(), "uid-golden", golden, []*systemInfoVolume{vol()}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
 	// Overwrite with a different actor, as happens when a snapshot taken from
 	// one actor seeds another on resume: files must carry the new values.
 	alpha := resources.ActorRef{Atespace: "ate-e2e-probe", Name: "probe-alpha"}
-	if _, err := r.Register("uid-alpha", alpha, []*systemInfoVolume{vol()}); err != nil {
+	if _, err := r.Register(t.Context(), "uid-alpha", alpha, []*systemInfoVolume{vol()}); err != nil {
 		t.Fatalf("Register (rewrite): %v", err)
 	}
 
@@ -478,7 +478,7 @@ func TestSystemInfoVolumeRegister_StableRealPaths(t *testing.T) {
 	}
 
 	golden := resources.ActorRef{Atespace: "ate-e2e-probe", Name: "golden-actor"}
-	if _, err := r.Register("uid-golden", golden, []*systemInfoVolume{vol()}); err != nil {
+	if _, err := r.Register(t.Context(), "uid-golden", golden, []*systemInfoVolume{vol()}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
@@ -503,7 +503,7 @@ func TestSystemInfoVolumeRegister_StableRealPaths(t *testing.T) {
 	// Regenerate for a different actor, as a restore from a shared golden
 	// snapshot does.
 	alpha := resources.ActorRef{Atespace: "ate-e2e-probe", Name: "probe-alpha"}
-	if _, err := r.Register("uid-alpha", alpha, []*systemInfoVolume{vol()}); err != nil {
+	if _, err := r.Register(t.Context(), "uid-alpha", alpha, []*systemInfoVolume{vol()}); err != nil {
 		t.Fatalf("Register (rewrite): %v", err)
 	}
 
@@ -590,7 +590,7 @@ func TestSystemInfoVolumeRefresher_RegisterTwiceSupersedes(t *testing.T) {
 	registerTrustVolume(t, r, dir, "uid-1")
 	first := r.actors["uid-1"]
 
-	if _, err := r.Register("uid-1", resources.ActorRef{Atespace: "team-a", Name: "uid-1"}, nil); err != nil {
+	if _, err := r.Register(t.Context(), "uid-1", resources.ActorRef{Atespace: "team-a", Name: "uid-1"}, nil); err != nil {
 		t.Fatalf("second Register: %v", err)
 	}
 	if !first.stale {
@@ -610,7 +610,7 @@ func TestSystemInfoVolumeRefresher_StaleDeregisterPreservesNewerRegistration(t *
 	firstVol := &systemInfoVolume{
 		Name: "trust", Root: filepath.Join(firstDir, "uid-1", "system-info", "trust"), Spec: trustVolumeSpec("ca.pem"),
 	}
-	first, err := r.Register("uid-1", resources.ActorRef{Atespace: "team-a", Name: "uid-1"}, []*systemInfoVolume{firstVol})
+	first, err := r.Register(t.Context(), "uid-1", resources.ActorRef{Atespace: "team-a", Name: "uid-1"}, []*systemInfoVolume{firstVol})
 	if err != nil {
 		t.Fatalf("first Register: %v", err)
 	}
@@ -636,7 +636,7 @@ func TestSystemInfoVolumeRefresher_DeregisterOwnedNil(t *testing.T) {
 			var current *registeredActor
 			if registered {
 				var err error
-				current, err = r.Register("uid-1", resources.ActorRef{}, nil)
+				current, err = r.Register(t.Context(), "uid-1", resources.ActorRef{}, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -667,7 +667,7 @@ func TestSystemInfoVolumeRefresher_FailedReplacementDropsRegistration(t *testing
 	if err := os.WriteFile(blockedRoot, []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	owner, err := r.Register("uid-1", resources.ActorRef{}, []*systemInfoVolume{{
+	owner, err := r.Register(t.Context(), "uid-1", resources.ActorRef{}, []*systemInfoVolume{{
 		Name: "trust", Root: blockedRoot, Spec: trustVolumeSpec("ca.pem"),
 	}})
 	if err == nil || !strings.Contains(err.Error(), "while creating") {
@@ -722,7 +722,7 @@ func TestSystemInfoVolumeRefresher_ConcurrentLifecycle(t *testing.T) {
 					Root: filepath.Join(dir, uid, "system-info", "trust"),
 					Spec: trustVolumeSpec("ca.pem"),
 				}
-				if _, err := r.Register(uid, resources.ActorRef{Atespace: "team-a", Name: uid}, []*systemInfoVolume{vol}); err != nil {
+				if _, err := r.Register(t.Context(), uid, resources.ActorRef{Atespace: "team-a", Name: uid}, []*systemInfoVolume{vol}); err != nil {
 					t.Errorf("Register(%s): %v", uid, err)
 					return
 				}
@@ -765,7 +765,7 @@ func TestWriteSystemInfoFile_ConfinedToRoot(t *testing.T) {
 	}
 	defer root.Close()
 
-	if _, err := writeSystemInfoFile(root, "escape/ca.pem", []byte("x")); err == nil {
+	if _, err := writeSystemInfoFile(root, "escape/ca.pem", []byte("x"), 0o644); err == nil {
 		t.Error("writeSystemInfoFile = nil, want refusal to write through a symlink leaving the volume root")
 	}
 	if _, err := os.Stat(filepath.Join(outside, "ca.pem")); !os.IsNotExist(err) {
@@ -789,7 +789,7 @@ func TestSystemInfoVolumeRegister_TrustBundle(t *testing.T) {
 	t.Run("resolution failure fails the start rather than produce an empty trust file", func(t *testing.T) {
 		r := newSystemInfoVolumeRefresher(trustbundle.NewSource(ctbLister(t).Get, nil), nil)
 		vol := &systemInfoVolume{Name: "trust", Root: filepath.Join(t.TempDir(), "trust"), Spec: trustVolumeSpec("ca.pem")}
-		owner, err := r.Register("uid-2", resources.ActorRef{Atespace: "team-a", Name: "actor-2"}, []*systemInfoVolume{vol})
+		owner, err := r.Register(t.Context(), "uid-2", resources.ActorRef{Atespace: "team-a", Name: "actor-2"}, []*systemInfoVolume{vol})
 		if err == nil || !strings.Contains(err.Error(), "not found") || !strings.Contains(err.Error(), `"trust"`) {
 			t.Errorf("Register = %v, want not-found error naming the volume", err)
 		}
@@ -804,11 +804,11 @@ func TestSystemInfoVolumeRegister_TrustBundle(t *testing.T) {
 	t.Run("failed initial write cleanup preserves a newer registration", func(t *testing.T) {
 		r := newSystemInfoVolumeRefresher(trustbundle.NewSource(ctbLister(t).Get, nil), nil)
 		bad := &systemInfoVolume{Name: "trust", Root: filepath.Join(t.TempDir(), "trust"), Spec: trustVolumeSpec("ca.pem")}
-		owner, err := r.Register("uid-3", resources.ActorRef{Atespace: "team-a", Name: "actor-3"}, []*systemInfoVolume{bad})
+		owner, err := r.Register(t.Context(), "uid-3", resources.ActorRef{Atespace: "team-a", Name: "actor-3"}, []*systemInfoVolume{bad})
 		if err == nil {
 			t.Fatal("Register succeeded without the projected trust bundle")
 		}
-		newer, err := r.Register("uid-3", resources.ActorRef{Atespace: "team-a", Name: "actor-3"}, []*systemInfoVolume{{
+		newer, err := r.Register(t.Context(), "uid-3", resources.ActorRef{Atespace: "team-a", Name: "actor-3"}, []*systemInfoVolume{{
 			Name: "metadata", Root: filepath.Join(t.TempDir(), "metadata"), Spec: metadataVolumeSpec(),
 		}})
 		if err != nil {

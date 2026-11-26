@@ -22,6 +22,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/google/uuid"
 	"go.ate.dev/substrate/api/ateapi/v1"
 	"go.ate.dev/substrate/cmd/ateapi/internal/scheduling"
 	"go.ate.dev/substrate/cmd/ateapi/internal/store"
@@ -31,6 +32,7 @@ import (
 	"go.ate.dev/substrate/internal/preview"
 	"go.ate.dev/substrate/internal/proto/ateletpb"
 	"go.ate.dev/substrate/internal/resources"
+	"go.ate.dev/substrate/internal/supervisorbootstrap"
 	"go.ate.dev/substrate/internal/volume"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -156,7 +158,26 @@ func (w *ActorWorkflow) loadActorForResume(ctx context.Context, actorRef resourc
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := validateSupervisorRestore(actor, actorTemplate); err != nil {
+		return nil, nil, err
+	}
 	return actor, actorTemplate, nil
+}
+
+// validateSupervisorRestore refuses to restore process memory for a protected
+// supervisor: that memory can hold a credential an earlier activation read.
+func validateSupervisorRestore(actor *ateapi.Actor, tmpl *ateapi.ActorTemplate) error {
+	activation, err := supervisorbootstrap.Describe(tmpl)
+	if err != nil {
+		return apierror.FailedPrecondition("ActorTemplate is not a valid protected supervisor: %v", err)
+	}
+	if activation == nil {
+		return nil
+	}
+	if snap := snapshotToResume(actor.GetStatus()); snap.GetFidelity() == ateapi.SnapshotFidelity_SNAPSHOT_FIDELITY_MEMORY && !templateReplaced(snap, tmpl) {
+		return apierror.FailedPrecondition("protected supervisor cannot restore a memory snapshot")
+	}
+	return nil
 }
 
 // checkSnapshotUpload fails with DataLoss when snapshotToResume records no
@@ -407,6 +428,13 @@ func (w *ActorWorkflow) assignWorkerAttempt(ctx context.Context, actorRef resour
 	if err := checkSnapshotUpload(actorRef, actor); err != nil {
 		return nil, nil, err
 	}
+	activation, err := supervisorbootstrap.Describe(actorTemplate)
+	if err != nil {
+		return nil, nil, apierror.FailedPrecondition("ActorTemplate is not a valid protected supervisor: %v", err)
+	}
+	if supervisorbootstrap.IsGoldenActor(actorTemplate, actor) {
+		activation = nil
+	}
 	start := time.Now()
 	outcome := ateattr.SchedulerOutcomeError
 	poolNamespace := ""
@@ -483,6 +511,13 @@ func (w *ActorWorkflow) assignWorkerAttempt(ctx context.Context, actorRef resour
 		toUpdate.Status.State = ateapi.ActorState_ACTOR_STATE_RESUMING
 		toUpdate.Status.WorkerAssignment = newAssignment
 		toUpdate.Status.AssignedNode = newAssignment.GetNodeName()
+		// Every assignment starts a new activation, even on the same worker.
+		toUpdate.Status.SupervisorActivation = nil
+		if activation != nil {
+			toUpdate.Status.SupervisorActivation = proto.CloneOf(activation)
+			toUpdate.Status.SupervisorActivation.ActivationId = uuid.NewString()
+			toUpdate.Status.SupervisorActivation.WorkerUid = bound.GetWorkerPodUid()
+		}
 		return nil
 	})
 	if err != nil {

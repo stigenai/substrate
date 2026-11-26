@@ -1842,6 +1842,7 @@ const (
 	WorkerService_SetWorkerSandboxRuntimes_FullMethodName   = "/substrate.ateapi.v1.WorkerService/SetWorkerSandboxRuntimes"
 	WorkerService_MintWorkerActorCertificate_FullMethodName = "/substrate.ateapi.v1.WorkerService/MintWorkerActorCertificate"
 	WorkerService_MintWorkerActorJwt_FullMethodName         = "/substrate.ateapi.v1.WorkerService/MintWorkerActorJwt"
+	WorkerService_MintSupervisorBootstrap_FullMethodName    = "/substrate.ateapi.v1.WorkerService/MintSupervisorBootstrap"
 	WorkerService_RequestActorSuspend_FullMethodName        = "/substrate.ateapi.v1.WorkerService/RequestActorSuspend"
 	WorkerService_ReportActorSnapshotState_FullMethodName   = "/substrate.ateapi.v1.WorkerService/ReportActorSnapshotState"
 	WorkerService_ReportActorCrashed_FullMethodName         = "/substrate.ateapi.v1.WorkerService/ReportActorCrashed"
@@ -1913,6 +1914,8 @@ type WorkerServiceClient interface {
 	// `worker-for-actor.ate.dev`, see MintWorkerActorJwtResponse. The lifetime is
 	// fixed at one hour.
 	MintWorkerActorJwt(ctx context.Context, in *MintWorkerActorJwtRequest, opts ...grpc.CallOption) (*MintWorkerActorJwtResponse, error)
+	// Mint a protected per-activation token for the assigned atelet only.
+	MintSupervisorBootstrap(ctx context.Context, in *MintSupervisorBootstrapRequest, opts ...grpc.CallOption) (*MintSupervisorBootstrapResponse, error)
 	// RequestActorSuspend asks the control plane to suspend an Actor that the
 	// calling Worker hosts. Only the Worker can observe what makes an Actor
 	// worth reclaiming -- whether its workload still has anything to do -- and
@@ -2015,6 +2018,16 @@ func (c *workerServiceClient) MintWorkerActorJwt(ctx context.Context, in *MintWo
 	return out, nil
 }
 
+func (c *workerServiceClient) MintSupervisorBootstrap(ctx context.Context, in *MintSupervisorBootstrapRequest, opts ...grpc.CallOption) (*MintSupervisorBootstrapResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(MintSupervisorBootstrapResponse)
+	err := c.cc.Invoke(ctx, WorkerService_MintSupervisorBootstrap_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *workerServiceClient) RequestActorSuspend(ctx context.Context, in *RequestActorSuspendRequest, opts ...grpc.CallOption) (*RequestActorSuspendResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RequestActorSuspendResponse)
@@ -2111,6 +2124,8 @@ type WorkerServiceServer interface {
 	// `worker-for-actor.ate.dev`, see MintWorkerActorJwtResponse. The lifetime is
 	// fixed at one hour.
 	MintWorkerActorJwt(context.Context, *MintWorkerActorJwtRequest) (*MintWorkerActorJwtResponse, error)
+	// Mint a protected per-activation token for the assigned atelet only.
+	MintSupervisorBootstrap(context.Context, *MintSupervisorBootstrapRequest) (*MintSupervisorBootstrapResponse, error)
 	// RequestActorSuspend asks the control plane to suspend an Actor that the
 	// calling Worker hosts. Only the Worker can observe what makes an Actor
 	// worth reclaiming -- whether its workload still has anything to do -- and
@@ -2177,6 +2192,9 @@ func (UnimplementedWorkerServiceServer) MintWorkerActorCertificate(context.Conte
 }
 func (UnimplementedWorkerServiceServer) MintWorkerActorJwt(context.Context, *MintWorkerActorJwtRequest) (*MintWorkerActorJwtResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method MintWorkerActorJwt not implemented")
+}
+func (UnimplementedWorkerServiceServer) MintSupervisorBootstrap(context.Context, *MintSupervisorBootstrapRequest) (*MintSupervisorBootstrapResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method MintSupervisorBootstrap not implemented")
 }
 func (UnimplementedWorkerServiceServer) RequestActorSuspend(context.Context, *RequestActorSuspendRequest) (*RequestActorSuspendResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RequestActorSuspend not implemented")
@@ -2298,6 +2316,24 @@ func _WorkerService_MintWorkerActorJwt_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WorkerService_MintSupervisorBootstrap_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(MintSupervisorBootstrapRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkerServiceServer).MintSupervisorBootstrap(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkerService_MintSupervisorBootstrap_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkerServiceServer).MintSupervisorBootstrap(ctx, req.(*MintSupervisorBootstrapRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _WorkerService_RequestActorSuspend_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RequestActorSuspendRequest)
 	if err := dec(in); err != nil {
@@ -2378,6 +2414,10 @@ var WorkerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "MintWorkerActorJwt",
 			Handler:    _WorkerService_MintWorkerActorJwt_Handler,
+		},
+		{
+			MethodName: "MintSupervisorBootstrap",
+			Handler:    _WorkerService_MintSupervisorBootstrap_Handler,
 		},
 		{
 			MethodName: "RequestActorSuspend",

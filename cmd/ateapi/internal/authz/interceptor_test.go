@@ -218,6 +218,7 @@ func TestUnaryServerInterceptor_UnregisteredAndHandlerAuthorizedRPCs(t *testing.
 		{"RequestActorSuspend passes", context.Background(), ateapi.WorkerService_RequestActorSuspend_FullMethodName, codes.OK},
 		{"MintWorkerActorCertificate passes", context.Background(), ateapi.WorkerService_MintWorkerActorCertificate_FullMethodName, codes.OK},
 		{"MintWorkerActorJwt passes", context.Background(), ateapi.WorkerService_MintWorkerActorJwt_FullMethodName, codes.OK},
+		{"MintSupervisorBootstrap passes", context.Background(), ateapi.WorkerService_MintSupervisorBootstrap_FullMethodName, codes.OK},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

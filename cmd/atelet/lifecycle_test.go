@@ -635,7 +635,7 @@ func TestActivationFailureBeforeRegistration(t *testing.T) {
 			spec := &ateletpb.WorkloadSpec{Volumes: []*ateletpb.Volume{{
 				Name: "trust", SystemInfo: trustVolumeSpec("ca.pem"),
 			}}}
-			registered, err := refresher.Register(actorUID, resources.ActorRef{Atespace: "team-a", Name: "actor-1"}, systemInfoVolumesFor(actorUID, spec))
+			registered, err := refresher.Register(t.Context(), actorUID, resources.ActorRef{Atespace: "team-a", Name: "actor-1"}, systemInfoVolumesFor(actorUID, spec))
 			if err != nil {
 				t.Fatal(err)
 			}

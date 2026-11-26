@@ -19,6 +19,7 @@ import (
 
 	"go.ate.dev/substrate/api/ateapi/v1"
 	"go.ate.dev/substrate/internal/proto/ateletpb"
+	"go.ate.dev/substrate/internal/supervisorbootstrap"
 )
 
 // toAteletResources copies declared limits into atelet's form. Returns nil
@@ -61,6 +62,21 @@ func workloadSpecFromActorTemplate(actorTemplate *ateapi.ActorTemplate, actor *a
 					}
 					ateletSystemInfo.DataSources = append(ateletSystemInfo.DataSources, &ateletpb.SystemInfoDataSource{
 						ActorMetadata: actorMetadata,
+					})
+				case dataSource.GetSupervisorBootstrap() != nil:
+					// The golden actor gets an empty projection. Every other
+					// actor needs the activation its resume recorded.
+					bootstrap := &ateletpb.SupervisorBootstrapDataSource{Profile: dataSource.GetSupervisorBootstrap().GetProfile()}
+					if !supervisorbootstrap.IsGoldenActor(actorTemplate, actor) {
+						activation := actor.GetStatus().GetSupervisorActivation()
+						if activation.GetActivationId() == "" {
+							return nil, fmt.Errorf("protected activation missing")
+						}
+						bootstrap.ActivationId = activation.GetActivationId()
+						bootstrap.WorkerUid = activation.GetWorkerUid()
+					}
+					ateletSystemInfo.DataSources = append(ateletSystemInfo.DataSources, &ateletpb.SystemInfoDataSource{
+						SupervisorBootstrap: bootstrap,
 					})
 				case dataSource.GetTrustBundle() != nil:
 					// atelet resolves named trustBundles against its allowlist

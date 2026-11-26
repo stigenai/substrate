@@ -403,6 +403,7 @@ func TestDebugRedactFieldsArePinned(t *testing.T) {
 		"substrate.ateapi.v1.EnvVar.value":                           true,
 		"substrate.ateapi.v1.MintActorJwtResponse.actor_jwt":         true,
 		"substrate.ateapi.v1.MintWorkerActorJwtResponse.actor_jwt":   true,
+		"substrate.ateapi.v1.MintSupervisorBootstrapResponse.token":  true,
 		"atelet.EnvVar.value":                                        true,
 		"ateworker.ContainerSpec.env":                                true,
 		"substrate.credprovider.v1.FetchSecretResponse.opaque_bytes": true,

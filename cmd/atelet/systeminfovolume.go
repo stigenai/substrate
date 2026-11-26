@@ -26,15 +26,25 @@ import (
 	"sync"
 	"time"
 
+	"go.ate.dev/substrate/api/ateapi/v1"
 	"go.ate.dev/substrate/cmd/atelet/internal/ateletpath"
 	"go.ate.dev/substrate/cmd/atelet/internal/trustbundle"
 	"go.ate.dev/substrate/internal/proto/ateletpb"
 	"go.ate.dev/substrate/internal/resources"
+	"go.ate.dev/substrate/internal/supervisorbootstrap"
 	"go.ate.dev/substrate/internal/volumepath"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
+)
+
+const (
+	// supervisorMintTimeout bounds one MintSupervisorBootstrap call.
+	supervisorMintTimeout = 10 * time.Second
+
+	protectedDirMode  os.FileMode = 0o700
+	protectedFileMode os.FileMode = 0o600
 )
 
 // systemInfoVolumesFor lists spec's system-info volumes with their host roots.
@@ -76,14 +86,30 @@ type systemInfoVolumeRefresher struct {
 	// TODO(#1372): in memory only; an atelet restart drops the registry until
 	// each actor's next Run/Restore.
 	actors map[string]*registeredActor
+
+	// bootstrap issues the credential for a supervisor bootstrap projection.
+	// Nil leaves such a projection unwritable.
+	bootstrap ateapi.WorkerServiceClient
+}
+
+// refresherOption configures a systemInfoVolumeRefresher.
+type refresherOption func(*systemInfoVolumeRefresher)
+
+// withSupervisorBootstrap sets the client that issues supervisor bootstrap
+// credentials.
+func withSupervisorBootstrap(c ateapi.WorkerServiceClient) refresherOption {
+	return func(r *systemInfoVolumeRefresher) { r.bootstrap = c }
 }
 
 // newSystemInfoVolumeRefresher subscribes to ClusterTrustBundle events.
-func newSystemInfoVolumeRefresher(bundles *trustbundle.Source, informer cache.SharedIndexInformer) *systemInfoVolumeRefresher {
+func newSystemInfoVolumeRefresher(bundles *trustbundle.Source, informer cache.SharedIndexInformer, opts ...refresherOption) *systemInfoVolumeRefresher {
 	r := &systemInfoVolumeRefresher{
 		bundles: bundles,
 		queue:   workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]()),
 		actors:  map[string]*registeredActor{},
+	}
+	for _, opt := range opts {
+		opt(r)
 	}
 	if informer != nil {
 		informer.AddEventHandler(r.eventHandler())
@@ -97,7 +123,7 @@ func newSystemInfoVolumeRefresher(bundles *trustbundle.Source, informer cache.Sh
 // after a worker pod crash left a stale entry without Terminate), the previous
 // registration is superseded, even if this registration's initial write fails.
 // The failed registration is removed without restoring the previous one.
-func (r *systemInfoVolumeRefresher) Register(actorUID string, ref resources.ActorRef, volumes []*systemInfoVolume) (*registeredActor, error) {
+func (r *systemInfoVolumeRefresher) Register(ctx context.Context, actorUID string, ref resources.ActorRef, volumes []*systemInfoVolume) (*registeredActor, error) {
 	actor := &registeredActor{uid: actorUID, ref: ref, volumes: volumes}
 	// Held until the initial write finishes so a refresh cannot interleave.
 	actor.mu.Lock()
@@ -117,7 +143,7 @@ func (r *systemInfoVolumeRefresher) Register(actorUID string, ref resources.Acto
 	}
 
 	for _, v := range volumes {
-		if err := r.write(ref, actorUID, v); err != nil {
+		if err := r.write(ctx, ref, actorUID, v); err != nil {
 			r.mu.Lock()
 			if r.actors[actorUID] == actor {
 				delete(r.actors, actorUID)
@@ -166,10 +192,35 @@ func (r *systemInfoVolumeRefresher) DeregisterOwned(owner *registeredActor) {
 }
 
 // collectData builds the volume's contents keyed by volume-relative path.
-func (r *systemInfoVolumeRefresher) collectData(ref resources.ActorRef, actorUID string, si *ateletpb.SystemInfoVolumeSource) (payload map[string][]byte, err error) {
+func (r *systemInfoVolumeRefresher) collectData(ctx context.Context, ref resources.ActorRef, actorUID string, si *ateletpb.SystemInfoVolumeSource) (payload map[string][]byte, err error) {
 	payload = map[string][]byte{}
 	for _, dataSource := range si.GetDataSources() {
 		switch {
+		case dataSource.GetSupervisorBootstrap() != nil:
+			b := dataSource.GetSupervisorBootstrap()
+			if len(si.GetDataSources()) != 1 || b.GetProfile() != supervisorbootstrap.Profile {
+				return nil, fmt.Errorf("invalid protected supervisor projection")
+			}
+			// The golden actor, and any actor with no activation, gets an
+			// empty volume: it must never hold a credential.
+			if b.GetActivationId() == "" {
+				continue
+			}
+			if r.bootstrap == nil || b.GetWorkerUid() == "" {
+				return nil, fmt.Errorf("protected supervisor issuer unavailable")
+			}
+			mintCtx, cancel := context.WithTimeout(ctx, supervisorMintTimeout)
+			resp, err := r.bootstrap.MintSupervisorBootstrap(mintCtx, &ateapi.MintSupervisorBootstrapRequest{
+				Actor:        ref.ToObjectRef(),
+				ActorUid:     actorUID,
+				ActivationId: b.GetActivationId(),
+				WorkerUid:    b.GetWorkerUid(),
+			})
+			cancel()
+			if err != nil || resp.GetToken() == "" {
+				return nil, fmt.Errorf("protected supervisor issuance failed")
+			}
+			payload[supervisorbootstrap.FileName] = []byte(resp.GetToken())
 		case dataSource.GetTrustBundle() != nil:
 			tb := dataSource.GetTrustBundle()
 			pemBundle, err := r.bundles.Combined(tb.GetNames())
@@ -200,8 +251,8 @@ func (r *systemInfoVolumeRefresher) collectData(ref resources.ActorRef, actorUID
 }
 
 // write brings the volume's files up to date.
-func (r *systemInfoVolumeRefresher) write(ref resources.ActorRef, actorUID string, v *systemInfoVolume) error {
-	payload, err := r.collectData(ref, actorUID, v.Spec)
+func (r *systemInfoVolumeRefresher) write(ctx context.Context, ref resources.ActorRef, actorUID string, v *systemInfoVolume) error {
+	payload, err := r.collectData(ctx, ref, actorUID, v.Spec)
 	if err != nil {
 		return fmt.Errorf("while collecting volume contents: %w", err)
 	}
@@ -218,8 +269,15 @@ type systemInfoVolume struct {
 
 // apply writes payload into the volume and reports whether any file changed.
 func (v *systemInfoVolume) apply(payload map[string][]byte) (changed bool, err error) {
-	if err := os.MkdirAll(v.Root, 0o755); err != nil {
+	dirMode, fileMode := v.modes()
+	if err := os.MkdirAll(v.Root, dirMode); err != nil {
 		return false, fmt.Errorf("while creating %q: %w", v.Root, err)
+	}
+	if dirMode == protectedDirMode {
+		// MkdirAll leaves the mode of an existing directory alone.
+		if err := os.Chmod(v.Root, dirMode); err != nil {
+			return false, fmt.Errorf("while restricting %q: %w", v.Root, err)
+		}
 	}
 	root, err := os.OpenRoot(v.Root)
 	if err != nil {
@@ -227,7 +285,7 @@ func (v *systemInfoVolume) apply(payload map[string][]byte) (changed bool, err e
 	}
 	defer root.Close()
 	for _, relPath := range slices.Sorted(maps.Keys(payload)) {
-		written, err := writeSystemInfoFile(root, relPath, payload[relPath])
+		written, err := writeSystemInfoFile(root, relPath, payload[relPath], fileMode)
 		if err != nil {
 			return changed, err
 		}
@@ -236,15 +294,32 @@ func (v *systemInfoVolume) apply(payload map[string][]byte) (changed bool, err e
 	return changed, nil
 }
 
-// writeSystemInfoFile writes one projected file inside root, skipping it if
-// the contents already match, and reports whether it wrote. Also re-validates
-// relPath.
-func writeSystemInfoFile(root *os.Root, relPath string, data []byte) (bool, error) {
+// modes returns the directory and file modes of the volume. A supervisor
+// bootstrap volume is readable by root only.
+func (v *systemInfoVolume) modes() (dirMode, fileMode os.FileMode) {
+	for _, ds := range v.Spec.GetDataSources() {
+		if ds.GetSupervisorBootstrap() != nil {
+			return protectedDirMode, protectedFileMode
+		}
+	}
+	return 0o755, 0o644
+}
+
+// writeSystemInfoFile writes one projected file inside root with mode, skipping
+// it if the contents already match, and reports whether it wrote. Also
+// re-validates relPath.
+func writeSystemInfoFile(root *os.Root, relPath string, data []byte, mode os.FileMode) (bool, error) {
 	if err := volumepath.ValidateProjected(relPath); err != nil {
 		return false, fmt.Errorf("invalid system-info path %q: %w", relPath, err)
 	}
 	dst := filepath.FromSlash(relPath)
 	if existing, err := root.ReadFile(dst); err == nil && bytes.Equal(existing, data) {
+		if mode == protectedFileMode {
+			// Matching contents can carry a looser mode from an earlier write.
+			if err := root.Chmod(dst, mode); err != nil {
+				return false, fmt.Errorf("while restricting system-info file %q under %q: %w", relPath, root.Name(), err)
+			}
+		}
 		return false, nil
 	}
 	if dir := filepath.Dir(dst); dir != "." {
@@ -252,7 +327,7 @@ func writeSystemInfoFile(root *os.Root, relPath string, data []byte) (bool, erro
 			return false, fmt.Errorf("while creating parent of %q under %q: %w", relPath, root.Name(), err)
 		}
 	}
-	if err := writeFileAtomicRoot(root, dst, data, 0o644); err != nil {
+	if err := writeFileAtomicRoot(root, dst, data, mode); err != nil {
 		return false, fmt.Errorf("while writing system-info file %q under %q: %w", relPath, root.Name(), err)
 	}
 	return true, nil
@@ -356,7 +431,7 @@ func (r *systemInfoVolumeRefresher) refreshBundle(ctx context.Context, bundleNam
 			if !projectsBundle(v.Spec, bundleName) {
 				continue
 			}
-			payload, err := r.collectData(actor.ref, actor.uid, v.Spec)
+			payload, err := r.collectData(ctx, actor.ref, actor.uid, v.Spec)
 			if err != nil {
 				// Not requeued: the informer delivers the next change to
 				// the bundle, which is what could make it resolvable.

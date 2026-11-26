@@ -92,6 +92,11 @@ func ValidateMintWorkerActorJwtRequest(ctx context.Context, req *ateapi.MintWork
 	return Validate_MintWorkerActorJwtRequest(ctx, op, nil, req, nil)
 }
 
+func ValidateMintSupervisorBootstrapRequest(ctx context.Context, req *ateapi.MintSupervisorBootstrapRequest) field.ErrorList {
+	op := operation.Operation{Type: operation.Create}
+	return Validate_MintSupervisorBootstrapRequest(ctx, op, nil, req, nil)
+}
+
 func ValidateActorUpdate(ctx context.Context, fldPath *field.Path, newVal, oldVal *ateapi.Actor, requireStatus bool) field.ErrorList {
 	// Call the generated validation.
 	op := MakeUpdateOp(ctx)

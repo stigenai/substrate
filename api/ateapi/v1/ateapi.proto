@@ -988,6 +988,33 @@ message ActorStatus {
   // +k8s:minimum=0
   // +k8s:update=NoUnset
   int32 last_assigned_generation = 7;
+
+  // Server-owned identity of the opt-in protected supervisor activation.
+  // Holds no secret; a new resume receives a new identity.
+  //
+  // +k8s:optional
+  SupervisorActivation supervisor_activation = 8;
+}
+
+// SupervisorActivation is retained before a protected actor starts.
+message SupervisorActivation {
+  // +k8s:required
+  // +k8s:format=k8s-uuid
+  string activation_id = 1;
+  // +k8s:required
+  // +k8s:format=k8s-uuid
+  string worker_uid = 2;
+  // +k8s:required
+  // +k8s:format=k8s-uuid
+  string template_uid = 3;
+  // +k8s:required
+  string template_digest = 4;
+  // +k8s:required
+  string image_digest = 5;
+  // +k8s:required
+  string launch_digest = 6;
+  // +k8s:required
+  string profile = 7;
 }
 
 // ActorCrash describes the failure that moved an Actor to CRASHED.
@@ -1619,7 +1646,7 @@ message SystemInfoVolumeSource {
 }
 
 message SystemInfoDataSource {
-  // Exactly one of actor_metadata / trust_bundle must be set.
+  // Exactly one of actor_metadata / trust_bundle / supervisor_bootstrap must be set.
   //
   // +k8s:optional
   // +k8s:unionMember
@@ -1628,6 +1655,17 @@ message SystemInfoDataSource {
   // +k8s:optional
   // +k8s:unionMember
   TrustBundleDataSource trust_bundle = 2;
+
+  // +k8s:optional
+  // +k8s:unionMember
+  SupervisorBootstrapDataSource supervisor_bootstrap = 3;
+}
+
+// SupervisorBootstrapDataSource opts into protected Fabriek activation identity.
+message SupervisorBootstrapDataSource {
+  // Only fabriek-native-v1 is supported. The path and permissions are fixed.
+  // +k8s:required
+  string profile = 1;
 }
 
 // ActorMetadataDataSource projects the actor's identity fields to files, one
@@ -2743,6 +2781,9 @@ service WorkerService {
   // fixed at one hour.
   rpc MintWorkerActorJwt(MintWorkerActorJwtRequest) returns (MintWorkerActorJwtResponse);
 
+  // Mint a protected per-activation token for the assigned atelet only.
+  rpc MintSupervisorBootstrap(MintSupervisorBootstrapRequest) returns (MintSupervisorBootstrapResponse);
+
   // RequestActorSuspend asks the control plane to suspend an Actor that the
   // calling Worker hosts. Only the Worker can observe what makes an Actor
   // worth reclaiming -- whether its workload still has anything to do -- and
@@ -2960,6 +3001,27 @@ message MintWorkerActorJwtResponse {
 
   // expire_time is when actor_jwt expires. Equal to its exp claim.
   google.protobuf.Timestamp expire_time = 2;
+}
+
+// MintSupervisorBootstrapRequest names retained server authority, never claims it.
+message MintSupervisorBootstrapRequest {
+  // +k8s:required
+  // +k8s:subfield(atespace)=+k8s:required
+  ObjectRef actor = 1;
+  // +k8s:required
+  // +k8s:format=k8s-uuid
+  string actor_uid = 2;
+  // +k8s:required
+  // +k8s:format=k8s-uuid
+  string activation_id = 3;
+  // +k8s:required
+  // +k8s:format=k8s-uuid
+  string worker_uid = 4;
+}
+
+message MintSupervisorBootstrapResponse {
+  // Delivered only over atelet mTLS, never in actor metadata or logs.
+  string token = 1 [ debug_redact = true ];
 }
 
 // RequestActorSuspendRequest asks to suspend an Actor the calling Worker hosts.

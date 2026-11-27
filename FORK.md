@@ -198,7 +198,7 @@ new files have no entry: `aws`, `static-worker` and `layerfs-e2e`.
 
 ### microvm-fuse
 
-- **Status:** `candidate`
+- **Status:** `proposed https://github.com/agent-substrate/substrate/issues/4186`
 - **Upstream files:** the WorkerPool API types and the generated deepcopy and
   CRD, the WorkerPool controller, `cmd/ateworker-microvm`, `internal/ocispec`,
   `docs/api-guide.md` and the e2e probe.
@@ -242,7 +242,7 @@ new files have no entry: `aws`, `static-worker` and `layerfs-e2e`.
 
 ### egress-paths
 
-- **Status:** `candidate`
+- **Status:** `proposed https://github.com/agent-substrate/substrate/issues/4187`
 - **Upstream files:** `api/ateapi/v1/ateapi.proto` and the generated code,
   `cmd/ateapi/internal/apivalidation/egress_policy.go`,
   `internal/egresspolicy/egresspolicy.go`,

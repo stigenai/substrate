@@ -181,7 +181,7 @@ new files have no entry: `aws`, `static-worker` and `layerfs-e2e`.
 
 ### image-pull-keychain
 
-- **Status:** `candidate`
+- **Status:** `proposed https://github.com/agent-substrate/substrate/pull/4183`
 - **Upstream files:** `cmd/atelet/main.go`
 - **Reason:** atelet pulls images with the GCP keychain only. A non-GCP fleet
   needs the Docker config keychain.
@@ -189,7 +189,7 @@ new files have no entry: `aws`, `static-worker` and `layerfs-e2e`.
 
 ### atelet-dialer
 
-- **Status:** `candidate`
+- **Status:** `proposed https://github.com/agent-substrate/substrate/pull/4184`
 - **Upstream files:** `cmd/ateapi/internal/controlapi/dialer.go` and its tests.
 - **Reason:** the v1.0.1 dialer keeps the old connection open. This happens when
   Kubernetes replaces the atelet pod, when the node has no atelet, or when the

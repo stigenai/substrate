@@ -229,8 +229,16 @@ new files have no entry: `aws`, `static-worker` and `layerfs-e2e`.
 - **Reason:** Envoy offers a cached TLS session to a different SNI. Origins
   behind Cloudflare then return 503. `max_session_keys: 0` on the two upstream
   TLS clusters stops this.
+- **Rebase:** after v1.0.1, upstream added the TLS cluster
+  `egress_forward_proxy_websocket` (upstream #3985). On a base that has this
+  cluster, set `max_session_keys: 0` on it too. Also add it to the cluster list
+  in `TestEgressManifestsDisableUpstreamSessionResumption` and in
+  `upstreamTLSClusters`. If you do not, the manifest test fails. The branch
+  `up/egress-tls-pools` has the change.
+- **Upstream:** issue #3805 and PR #1764 are open. Comment on the issue. Do not
+  open a new PR.
 - **Remove when:** upstream sets `max_session_keys: 0`, or Envoy keys the
-  sessions by SNI.
+  sessions by SNI. Envoy v1.40 keys them by SNI (envoyproxy/envoy#45982).
 
 ### egress-paths
 
